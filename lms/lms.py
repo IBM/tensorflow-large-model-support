@@ -7,7 +7,8 @@ import queue as Queue
 
 
 class LMS(object):
-    def __init__(self, graph, optimizer_scope=None, excl_scopes=set(),
+    # def __init__(self, graph, optimizer_scope=None, excl_scopes=set(),
+    def __init__(self, graph, optimizer_scope=set(), excl_scopes=set(),
                  first_layer=None,
                  lb=1, ub=10000,
                  n_tensors=0,
@@ -108,8 +109,12 @@ class LMS(object):
             reachable_ops.update(set(ge.get_forward_walk_ops(seed_op)))
 
         # gradient ops
-        self.grad_ops = set(
-            ge.get_name_scope_ops(reachable_ops, self.optimizer_scope))
+        for scope in self.optimizer_scope:
+            self.grad_ops.update(
+                set(ge.filter_ops_from_regex(reachable_ops, scope)))
+            #    set(ge.get_name_scope_ops(reachable_ops, scope)))        
+        # self.grad_ops = set(
+        #    ge.get_name_scope_ops(reachable_ops, self.optimizer_scope))
 
         self.fw_reachable_ops = reachable_ops.difference(self.grad_ops)
     
