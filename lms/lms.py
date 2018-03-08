@@ -71,17 +71,17 @@ class LMS(object):
             total_consumming_ops = set()
             for t in src_op.outputs:
                 consumming_ops = set(util.get_consuming_ops(t))
-                total_consumming_ops.update(consumming_ops)
+                total_consumming_ops |= consumming_ops
 
             if lower_b <= 0:
                 # inside the range
-                consumming_ops_bw = total_consumming_ops.intersection(grad_ops)
+                consumming_ops_bw = total_consumming_ops & grad_ops
                 if len(consumming_ops_bw) > 0:
                     result_ops = consumming_ops_bw
                     break
 
             # go to the next level
-            next_ops = total_consumming_ops.difference(grad_ops)
+            next_ops = total_consumming_ops - grad_ops
             for op in next_ops:
                 if op in closed_set:
                     continue
@@ -105,22 +105,21 @@ class LMS(object):
 
         reachable_ops = set()
         for seed_op in seed_ops:
-            reachable_ops.update(set(ge.get_forward_walk_ops(seed_op)))
+            reachable_ops |= set(ge.get_forward_walk_ops(seed_op))
 
         # gradient ops
         self.grad_ops = set(
             ge.get_name_scope_ops(reachable_ops, self.optimizer_scope))
 
-        self.fw_reachable_ops = reachable_ops.difference(self.grad_ops)
+        self.fw_reachable_ops = reachable_ops - self.grad_ops
     
         # exclusive ops
         for scope in self.excl_scopes:
-            self.excl_ops.update(
-                set(ge.get_name_scope_ops(reachable_ops, scope)))
+            self.excl_ops |= set(ge.get_name_scope_ops(reachable_ops, scope))
         # atomic ops
         atomic_ops = {op for op in self.fw_reachable_ops
                       if op.type in self.atomic_types}
-        self.excl_ops.update(atomic_ops)
+        self.excl_ops |= atomic_ops
 
         self.do_action(seed_ops)
 
@@ -152,7 +151,7 @@ class LMS(object):
             next_ops = set()
             for t in src_op.outputs:
                 frontier_ops = set(util.get_consuming_ops(t))
-                next_ops.update(frontier_ops.difference(self.grad_ops))
+                next_ops |= frontier_ops - self.grad_ops
 
             # do action for src_op
             self.insert_swnodes(src_op)
@@ -186,7 +185,7 @@ class LMS(object):
             if self.debug and self.debug_level >= 2:
                 log_info("my frontier ops: {}".format(frontier_ops))
 
-            bw_frontier_ops = frontier_ops.intersection(self.grad_ops)
+            bw_frontier_ops = frontier_ops & self.grad_ops
 
             if self.debug and self.debug_level >= 2:
                 log_info("my bw frontier ops: {}".format(bw_frontier_ops))
