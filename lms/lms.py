@@ -4,6 +4,7 @@ from tensorflow.contrib.graph_editor import util
 
 import time
 import queue as Queue
+import lms.topos as topos
 
 
 class LMS(object):
@@ -39,6 +40,7 @@ class LMS(object):
 
         self.excl_ops = set()
         self.grad_ops = set()
+        self.topo_sort = None
         self.debug = debug
         self.debug_level = debug_level
 
@@ -52,49 +54,33 @@ class LMS(object):
         # for roundrobin scheduling
         self.currentSSG = False
 
-    def find_ctrld_ops(self, seed_op, grad_ops, lower_b, upper_b):  # BFS
-        open_set1 = Queue.Queue()
-        open_set2 = Queue.Queue()
-        closed_set = set()
-
-        open_set1.put(seed_op)
-
+    def find_ctrld_ops(self, fw_op, bw_op, lower_b, upper_b):  # BFS
         result_ops = set()
-        while not open_set1.empty():
-            # stop if reaching the upperbound
-            if upper_b == 0 or (lower_b > upper_b):
+        # offset ordering
+        fw_order = self.topo_sort.get_order(fw_op)
+        bw_order = self.topo_sort.get_order(bw_op)
+        lower_b = max([0, bw_order - lower_b])
+        upper_b = max([fw_order, bw_order - upper_b])
+
+        if self.debug and self.debug_level >= 1:
+            log_info("Consuming op {}, order: {}".format(bw_op.name, bw_order))
+
+        ctrld_order = -1
+        for i in reversed(range(upper_b, lower_b)):
+            candidates = self.topo_sort.get_ops(i)
+            if candidates - {fw_op, bw_op}:
+                result_ops |= candidates - {fw_op, bw_op}
+                ctrld_order = i
                 break
 
-            src_op = open_set1.get()
-
-            # do action for src_op
-            total_consumming_ops = set()
-            for t in src_op.outputs:
-                consumming_ops = set(util.get_consuming_ops(t))
-                total_consumming_ops |= consumming_ops
-
-            if lower_b <= 0:
-                # inside the range
-                consumming_ops_bw = total_consumming_ops & grad_ops
-                if len(consumming_ops_bw) > 0:
-                    result_ops = consumming_ops_bw
-                    break
-
-            # go to the next level
-            next_ops = total_consumming_ops - grad_ops
-            for op in next_ops:
-                if op in closed_set:
-                    continue
-                if op not in open_set2.queue:
-                    open_set2.put(op)
-
-            closed_set.add(src_op)
-            if open_set1.empty():
-                lower_b = lower_b - 1
-                upper_b = upper_b - 1
-                while not open_set2.empty():
-                    open_set1.put(open_set2.get())
-        return result_ops
+        if result_ops:
+            ctrld_op = next(iter(result_ops))
+            if self.debug and self.debug_level >= 1:
+                log_info("Control dependency op {},  order: {}".format(
+                    ctrld_op.name, ctrld_order))
+            return ctrld_op
+        else:
+            return None
 
     def run(self):
         log_info("Editing model for LMS")
@@ -112,7 +98,7 @@ class LMS(object):
             ge.get_name_scope_ops(reachable_ops, self.optimizer_scope))
 
         self.fw_reachable_ops = reachable_ops - self.grad_ops
-    
+
         # exclusive ops
         for scope in self.excl_scopes:
             self.excl_ops |= set(ge.get_name_scope_ops(reachable_ops, scope))
@@ -120,6 +106,10 @@ class LMS(object):
         atomic_ops = {op for op in self.fw_reachable_ops
                       if op.type in self.atomic_types}
         self.excl_ops |= atomic_ops
+
+        # build a topological sort
+        self.topo_sort = topos.TOPOS(seed_ops, self.graph)
+        self.topo_sort.build()
 
         self.do_action(seed_ops)
 
@@ -161,9 +151,9 @@ class LMS(object):
                     continue
                 if op not in open_set.queue:
                     open_set.put(op)
-            
+
             closed_set.add(src_op)
-      
+
     def insert_swnodes(self, src_op):
         if self.debug and self.debug_level >= 2:
             log_info("my op: {}".format(src_op))
@@ -171,7 +161,7 @@ class LMS(object):
         # bypass exclusive ops
         if src_op in self.excl_ops:
             return
-    
+
         for t in src_op.outputs:
             if self.n_tensors > 0:
                 if self.ingpu_count > 0:
@@ -189,10 +179,10 @@ class LMS(object):
 
             if self.debug and self.debug_level >= 2:
                 log_info("my bw frontier ops: {}".format(bw_frontier_ops))
-      
+
             if not bw_frontier_ops:
                 continue
-              
+
             # swap-out node
             swap_out_sgv = None
             src_out_idx = None
@@ -254,12 +244,10 @@ class LMS(object):
                 self.excl_ops.add(swap_in.op)
 
                 # control dependency -> swap_in
-                ctrld_ops = self.find_ctrld_ops(
-                    src_op, self.grad_ops, self.lb, self.ub)
-                if dest_op in ctrld_ops:
-                    ctrld_ops.remove(dest_op)
-                if ctrld_ops:
-                    ge.add_control_inputs(swap_in.op, next(iter(ctrld_ops)))
+                ctrld_op = self.find_ctrld_ops(
+                    src_op, dest_op, self.lb, self.ub)
+                if ctrld_op:
+                    ge.add_control_inputs(swap_in.op, ctrld_op)
 
     def get_ext_device(self, update=False):
         return self.roundrobin_ext_device(update)
@@ -288,7 +276,7 @@ class LMS(object):
             else:
                 # get only
                 return  "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
-        
+
 def log_info(message):
     print("[LMS] {}".format(message))
 
@@ -301,4 +289,3 @@ def connect_sgv(src_sgv, dest_sgv,
         dest_sgv = dest_sgv.remap_inputs([idx])
 
     ge.connect(src_sgv, dest_sgv, disconnect_first)
-
