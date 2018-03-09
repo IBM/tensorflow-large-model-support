@@ -54,23 +54,36 @@ class LMS(object):
         # for roundrobin scheduling
         self.currentSSG = False
 
-    def find_ctrld_ops(self, fw_op, bw_op, lower_b, upper_b):  # BFS
+        # order used for some ctrld op
+        self.used_order = set()
+
+    def find_ctrld_ops(self, fw_op, bw_op, lower_b, upper_b):  # reversed chain rules
         result_ops = set()
         # offset ordering
         fw_order = self.topo_sort.get_order(fw_op)
-        bw_order = self.topo_sort.get_order(bw_op)
-        lower_b = max([0, bw_order - lower_b])
-        upper_b = max([fw_order, bw_order - upper_b])
+        lower_b = fw_order + lower_b
+        upper_b = min([self.topo_sort.size, fw_order + upper_b])
 
         if self.debug and self.debug_level >= 1:
-            log_info("Consuming op {}, order: {}".format(bw_op.name, bw_order))
+            log_info("Order {}, lower_b {}, upper_b: {}".format(
+                fw_order, lower_b, upper_b))
 
         ctrld_order = -1
-        for i in reversed(range(upper_b, lower_b)):
+        for i in range(lower_b, upper_b):
+            if i in self.used_order:
+                continue
+
             candidates = self.topo_sort.get_ops(i)
-            if candidates - {fw_op, bw_op}:
-                result_ops |= candidates - {fw_op, bw_op}
+            bw_candidates = set()
+            for op in candidates:
+                for t in op.outputs:
+                    bw_candidates |= set(util.get_consuming_ops(t))
+            bw_candidates &= self.grad_ops
+            bw_candidates -= {bw_op}
+            if bw_candidates:
+                result_ops |= bw_candidates
                 ctrld_order = i
+                self.used_order.add(i)
                 break
 
         if result_ops:
@@ -108,7 +121,9 @@ class LMS(object):
         self.excl_ops |= atomic_ops
 
         # build a topological sort
-        self.topo_sort = topos.TOPOS(seed_ops, self.graph)
+        self.topo_sort = topos.TOPOS(
+            seed_ops, self.graph,
+            incl_ops=reachable_ops-self.grad_ops)
         self.topo_sort.build()
 
         self.do_action(seed_ops)

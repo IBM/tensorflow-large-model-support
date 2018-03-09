@@ -5,9 +5,11 @@ from tensorflow.contrib.graph_editor import util
 
 
 class TOPOS(object):
-    def __init__(self, seed_ops, graph):
+    def __init__(self, seed_ops, graph, incl_ops):
         self.graph = graph
         self.seed_ops = seed_ops
+
+        self.incl_ops = incl_ops
         self.topo_sort = {}
 
     def build_dependency_dict(self):
@@ -18,6 +20,7 @@ class TOPOS(object):
         for op in self.seed_ops:
             open_set.put(op)
 
+        # traversal in the fw phase
         while not open_set.empty():
             src_op = open_set.get()
 
@@ -25,12 +28,13 @@ class TOPOS(object):
             dep_ops = set(src_op.control_inputs)
             for t in src_op.inputs:
                 dep_ops |= set(util.get_generating_ops(t))
+            dep_ops &= self.incl_ops
             dep_dict[src_op] = dep_ops
 
             next_ops = set()
             for t in src_op.outputs:
                 next_ops |= set(util.get_consuming_ops(t))
-
+            next_ops &= self.incl_ops
             for op in next_ops:
                 if op in closed_set:
                     continue
@@ -38,6 +42,7 @@ class TOPOS(object):
                     open_set.put(op)
 
             closed_set.add(src_op)
+
         return dep_dict
 
     def build(self):
@@ -55,3 +60,7 @@ class TOPOS(object):
 
     def get_ops(self, order):
         return self.topo_sort[order]
+
+    @property
+    def size(self):
+        return len(self.topo_sort)
