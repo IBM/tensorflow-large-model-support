@@ -16,6 +16,7 @@ class LMS(object):
                  ssg_n_tensors=0,  # the number of tensors for second storage
                  ssg_id="1",
                  ssg_as_buffer=False,
+                 fuse_swapins=False,
                  debug=False,
                  debug_level=1):
         if optimizer_scope is None:
@@ -32,6 +33,7 @@ class LMS(object):
         self.lb = lb  # lowerbound
         self.ub = ub  # upperbound
         self.n_tensors = n_tensors
+        self.fuse_swapins = fuse_swapins
 
         # Operations with these types will be ignored
         self.atomic_types = ['Const', 'Mul', 'Add',
@@ -236,45 +238,75 @@ class LMS(object):
 
                 # swap_in nodes
                 # TODO: swap_in nodes for branches
-                dev = "/cpu:0" if self.ssg_as_buffer else self.get_ext_device()
-                with tf.device(dev):
-                    swap_in = tf.identity(
-                        ts0,
-                        name = 'swap_in_' + src_op.name.replace('/', '_'))
-                    swap_in_sgv = ge.sgv(swap_in.op, graph=self.graph)
+                if self.fuse_swapins:
+                    dev = "/cpu:0" if self.ssg_as_buffer else self.get_ext_device()
+                    with tf.device(dev):
+                        swap_in = tf.identity(
+                            ts0,
+                            name = 'swap_in_' + src_op.name.replace('/', '_'))
+                        swap_in_sgv = ge.sgv(swap_in.op, graph=self.graph)
 
-                # Connect: swap_out -> swap_in
-                connect_sgv(swap_out_sgv, swap_in_sgv)
-                self.excl_ops.add(swap_in.op)
+                    # Connect: swap_out -> swap_in
+                    connect_sgv(swap_out_sgv, swap_in_sgv)
+                    self.excl_ops.add(swap_in.op)
 
-                # reuse swap_in tensors
-                for op in bw_frontier_ops:
-                    op_sgv = ge.sgv(op, graph=self.graph)
-                    ts = ge.filter_ts_from_regex(op, src_op.name)
-                    # Connect: swap_in -> dest
-                    input_idx = op_sgv.input_index(ts[0])
-                    connect_sgv(swap_in_sgv, op_sgv,
-                                remap_inputs=True, idx=input_idx)
+                    # reuse swap_in tensors
+                    for op in bw_frontier_ops:
+                        op_sgv = ge.sgv(op, graph=self.graph)
+                        ts = ge.filter_ts_from_regex(op, src_op.name)
+                        # Connect: swap_in -> dest
+                        input_idx = op_sgv.input_index(ts[0])
+                        connect_sgv(swap_in_sgv, op_sgv,
+                                    remap_inputs=True, idx=input_idx)
 
-                    if self.debug and self.debug_level >= 1:
-                        log_info(
-                            "{} reuses tensor {}".format(
-                                op.name, ts[0].name))
+                        if self.debug and self.debug_level >= 1:
+                            log_info(
+                                "{} reuses tensor {}".format(
+                                    op.name, ts[0].name))
 
-                # control dependency -> swap_in
-                max_order = -1
-                ctrld_op = None
-                for op in bw_frontier_ops:
-                    re = self.find_ctrld_ops(
-                        src_op, op, self.lb, self.ub)
-                    if re:
-                        ctrld_op = re[0]
-                        max_order = max(max_order, re[1])
-                if ctrld_op:
-                    ge.add_control_inputs(swap_in.op, ctrld_op)
-                    if self.debug and self.debug_level >= 1:
-                        log_info("Control dependency op {},  order: {}".format(
-                            ctrld_op.name, max_order))
+                    # control dependency -> swap_in
+                    max_order = -1
+                    ctrld_op = None
+                    for op in bw_frontier_ops:
+                        re = self.find_ctrld_ops(
+                            src_op, op, self.lb, self.ub)
+                        if re:
+                            ctrld_op = re[0]
+                            max_order = max(max_order, re[1])
+                    if ctrld_op:
+                        ge.add_control_inputs(swap_in.op, ctrld_op)
+                        if self.debug and self.debug_level >= 1:
+                            log_info("Control dependency op {},  order: {}".format(
+                                ctrld_op.name, max_order))
+                else:
+                    for dest_op in bw_frontier_ops:  # TODO: swap_in nodes for branches
+                        dest_sgv = ge.sgv(dest_op, graph=self.graph)
+                        ts = ge.filter_ts_from_regex(dest_op, src_op.name)
+
+                        dev = "/cpu:0" if self.ssg_as_buffer else self.get_ext_device()
+                        with tf.device(dev):
+                            swap_in = tf.identity(
+                                ts[0],
+                                name = 'swap_in_' + dest_op.name.replace('/', '_'))
+                            swap_in_sgv = ge.sgv(swap_in.op, graph=self.graph)
+
+                        # Connect: swap_out -> swap_in
+                        connect_sgv(swap_out_sgv, swap_in_sgv)
+
+                        # Connect: swap_in -> dest
+                        input_idx = dest_sgv.input_index(ts[0])
+                        connect_sgv(swap_in_sgv, dest_sgv,
+                                    remap_inputs=True, idx=input_idx)
+                        self.excl_ops.add(swap_in.op)
+
+                        # control dependency -> swap_in
+                        re = self.find_ctrld_ops(
+                            src_op, dest_op, self.lb, self.ub)
+                        if re:
+                            ge.add_control_inputs(swap_in.op, re[0])
+                            if self.debug and self.debug_level >= 1:
+                                log_info("Control dependency op {},  order: {}".format(
+                                    re[0].name, re[1]))
 
     def get_ext_device(self, update=False):
         return self.roundrobin_ext_device(update)
