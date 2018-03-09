@@ -59,16 +59,17 @@ class LMS(object):
         # order used for some ctrld op
         self.used_order = set()
 
-    def find_ctrld_ops(self, fw_op, bw_op, lower_b, upper_b):  # reversed chain rules
+    def find_ctrld_ops(self, fw_op, bw_op, lower_b, upper_b):
+        '''Find a control dependency operation using chain rules.
+        '''
         result_ops = set()
         # offset ordering
         fw_order = self.topo_sort.get_order(fw_op)
         lower_b = fw_order + lower_b
         upper_b = min([self.topo_sort.size, fw_order + upper_b])
 
-        if self.debug and self.debug_level >= 1:
-            log_info("Order {}, lower_b {}, upper_b: {}".format(
-                fw_order, lower_b, upper_b))
+        self.log_info("Order {}, lower_b {}, upper_b: {}".format(
+            fw_order, lower_b, upper_b), 1)
 
         ctrld_order = -1
         for i in range(lower_b, upper_b):
@@ -95,7 +96,7 @@ class LMS(object):
             return None
 
     def run(self):
-        log_info("Editing model for LMS")
+        self.log_info("Editing model for LMS")
         start_time = time.time()
 
         seed_ops = ge.filter_ops_from_regex(
@@ -127,17 +128,17 @@ class LMS(object):
 
         self.do_action(seed_ops)
 
-        log_info("Editing model for LMS, took: {} ms".format(
+        self.log_info("Editing model for LMS, took: {} ms".format(
             (time.time()-start_time)/1000))
         if (self.ingpu_count > 0):
-            log_info(
+            self.log_info(
                 "{} tensors will be swapped out(in) to(from) GPU device {}".format(
                     self.ingpu_count, self.ssg_id))
             if self.ssg_as_buffer:
-                log_info(
+                self.log_info(
                     "The GPU device {} is just used as a buffer.".format(
                         self.ssg_id))
-        log_info(
+        self.log_info(
             "{} tensors will be swapped out(in) to(from) the host".format(
                 self.incpu_count))
 
@@ -169,8 +170,7 @@ class LMS(object):
             closed_set.add(src_op)
 
     def insert_swnodes(self, src_op):
-        if self.debug and self.debug_level >= 2:
-            log_info("my op: {}".format(src_op))
+        self.log_info("Operation: {}".format(src_op), 2)
 
         # bypass exclusive ops
         if src_op in self.excl_ops:
@@ -186,13 +186,10 @@ class LMS(object):
                         return
 
             frontier_ops = set(util.get_consuming_ops(t))
-            if self.debug and self.debug_level >= 2:
-                log_info("my frontier ops: {}".format(frontier_ops))
+            self.log_info("my frontier ops: {}".format(frontier_ops), 2)
 
             bw_frontier_ops = frontier_ops & self.grad_ops
-
-            if self.debug and self.debug_level >= 2:
-                log_info("my bw frontier ops: {}".format(bw_frontier_ops))
+            self.log_info("my bw frontier ops: {}".format(bw_frontier_ops), 2)
 
             if not bw_frontier_ops:
                 continue
@@ -221,10 +218,8 @@ class LMS(object):
                     connect_sgv(src_sgv, swap_out_sgv,
                                 remap_outputs=True, idx=src_out_idx)
                     self.excl_ops.add(swap_out.op)
-                    if self.debug and self.debug_level >= 1:
-                        log_info(
-                            "Tensor {} will be placed on {}".format(
-                                ts0.name, self.get_ext_device()))
+                    self.log_info("Tensor {} will be placed on {}".format(
+                        ts0.name, self.get_ext_device()), 1)
 
                 if self.ssg_as_buffer and ("GPU" in self.get_ext_device()):
                     with tf.device("/cpu:0"):
@@ -259,10 +254,8 @@ class LMS(object):
                         connect_sgv(swap_in_sgv, op_sgv,
                                     remap_inputs=True, idx=input_idx)
 
-                        if self.debug and self.debug_level >= 1:
-                            log_info(
-                                "{} reuses tensor {}".format(
-                                    op.name, ts[0].name))
+                        self.log_info("{} reuses tensor {}".format(
+                            op.name, ts[0].name), 1)
 
                     # control dependency -> swap_in
                     max_order = -1
@@ -275,11 +268,12 @@ class LMS(object):
                             max_order = max(max_order, re[1])
                     if ctrld_op:
                         ge.add_control_inputs(swap_in.op, ctrld_op)
-                        if self.debug and self.debug_level >= 1:
-                            log_info("Control dependency op {},  order: {}".format(
-                                ctrld_op.name, max_order))
+                        self.log_info(
+                            "Control dependency op {},  order: {}".format(
+                                ctrld_op.name, max_order), 1)
                 else:
-                    for dest_op in bw_frontier_ops:  # TODO: swap_in nodes for branches
+                    # TODO: swap_in nodes for branches
+                    for dest_op in bw_frontier_ops:
                         dest_sgv = ge.sgv(dest_op, graph=self.graph)
                         ts = ge.filter_ts_from_regex(dest_op, src_op.name)
 
@@ -298,15 +292,17 @@ class LMS(object):
                         connect_sgv(swap_in_sgv, dest_sgv,
                                     remap_inputs=True, idx=input_idx)
                         self.excl_ops.add(swap_in.op)
+                        self.log_info("Consuming op {} swaps in {}".format(
+                            dest_op.name, ts[0].name), 1)
 
                         # control dependency -> swap_in
                         re = self.find_ctrld_ops(
                             src_op, dest_op, self.lb, self.ub)
                         if re:
                             ge.add_control_inputs(swap_in.op, re[0])
-                            if self.debug and self.debug_level >= 1:
-                                log_info("Control dependency op {},  order: {}".format(
-                                    re[0].name, re[1]))
+                            self.log_info(
+                                "Control dependency op {},  order: {}".format(
+                                    re[0].name, re[1]), 1)
 
     def get_ext_device(self, update=False):
         return self.roundrobin_ext_device(update)
@@ -336,8 +332,10 @@ class LMS(object):
                 # get only
                 return  "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
 
-def log_info(message):
-    print("[LMS] {}".format(message))
+    def log_info(self, message, level=0):
+        if level == 0 or (self.debug and self.debug_level >= level):
+            print("[LMS][{}] {}".format(level, message))
+
 
 def connect_sgv(src_sgv, dest_sgv,
                 remap_inputs=False, remap_outputs=False,
