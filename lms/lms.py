@@ -201,7 +201,7 @@ class LMS(object):
 
                     swap_out = tf.identity(
                         ts0,
-                        name = 'swap_out_' + src_op.name.replace('/', '_'))
+                        name='swap_out_' + src_op.name.replace('/', '_'))
                     swap_out_sgv = ge.sgv(swap_out.op, graph=self.graph)
 
                     # get output index
@@ -218,7 +218,7 @@ class LMS(object):
                     with tf.device("/cpu:0"):
                         swap_out0 = tf.identity(
                             ts0,
-                            name = 'swap_out0_' + src_op.name.replace('/', '_'))
+                            name='swap_out0_' + src_op.name.replace('/', '_'))
                         swap_out0_sgv = ge.sgv(swap_out0.op, graph=self.graph)
                         connect_sgv(swap_out_sgv, swap_out0_sgv)
                         self.excl_ops.add(swap_out0.op)
@@ -235,7 +235,7 @@ class LMS(object):
                         with tf.device(dev):
                             swap_in = tf.identity(
                                 ts0,
-                                name = 'swap_in_' + src_op.name.replace('/', '_'))
+                                name='swap_in_' + src_op.name.replace('/', '_'))
                             swap_in_sgv = ge.sgv(swap_in.op, graph=self.graph)
 
                         # Connect: swap_out -> swap_in
@@ -262,13 +262,8 @@ class LMS(object):
                             min_order = min(min_order, order)
                             earliest_op = op
                         if earliest_op:
-                            re = self.find_ctrld_ops(
-                                src_op, earliest_op, self.lb, self.ub)
-                            if re[0]:
-                                ge.add_control_inputs(swap_in.op, re[0])
-                                self.log_info(
-                                    "Control dependency op {},  order: {}".format(
-                                        re[0].name, re[1]), 1)
+                            self.add_ctrld(src_op, earliest_op, swap_in.op,
+                                           self.lb, self.ub)
                         bw_frontier_ops -= fuse_bw_frontier_ops
 
                 for dest_op in bw_frontier_ops:
@@ -279,7 +274,7 @@ class LMS(object):
                     with tf.device(dev):
                         swap_in = tf.identity(
                             ts[0],
-                            name = 'swap_in_' + dest_op.name.replace('/', '_'))
+                            name='swap_in_' + dest_op.name.replace('/', '_'))
                         swap_in_sgv = ge.sgv(swap_in.op, graph=self.graph)
 
                     # Connect: swap_out -> swap_in
@@ -294,13 +289,8 @@ class LMS(object):
                         dest_op.name, ts[0].name), 1)
 
                     # control dependency -> swap_in
-                    re = self.find_ctrld_ops(
-                        src_op, dest_op, self.lb, self.ub)
-                    if re[0]:
-                        ge.add_control_inputs(swap_in.op, re[0])
-                        self.log_info(
-                            "Control dependency op {},  order: {}".format(
-                                re[0].name, re[1]), 1)
+                    self.add_ctrld(src_op, dest_op, swap_in.op,
+                                   self.lb, self.ub)
 
     def get_ext_device(self, update=False):
         return self.roundrobin_ext_device(update)
@@ -311,7 +301,7 @@ class LMS(object):
             if update:
                 self.incpu_count = self.incpu_count + 1
                 self.currentSSG = False
-                return  "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
+                return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
             else:
                 # get only
                 return "/device:GPU:{}".format(self.ssg_id)
@@ -325,10 +315,20 @@ class LMS(object):
                 else:  # otherwise, use host
                     self.incpu_count = self.incpu_count + 1
                     self.currentSSG = False
-                    return  "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
+                    return "/cpu:{}".format(
+                        self.incpu_count % self.n_cpu_threads)
             else:
                 # get only
-                return  "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
+                return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
+
+    def add_ctrld(self, fw_op, bw_op, swapin_op, lb, up):
+        re = self.find_ctrld_ops(
+            fw_op, bw_op, self.lb, self.ub)
+        if re[0]:
+            ge.add_control_inputs(swapin_op, re[0])
+            self.log_info(
+                "Control dependency op {},  order: {}".format(
+                    re[0].name, re[1]), 1)
 
     def log_info(self, message, level=0):
         if level == 0 or (self.debug and self.debug_level >= level):
