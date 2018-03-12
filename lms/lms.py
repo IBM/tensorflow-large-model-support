@@ -321,9 +321,8 @@ class LMS(object):
                 # get only
                 return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
 
-    def add_ctrld(self, fw_op, bw_op, swapin_op, lb, up):
-        re = self.find_ctrld_ops(
-            fw_op, bw_op, self.lb, self.ub)
+    def add_ctrld(self, fw_op, bw_op, swapin_op, lb, ub):
+        re = self.find_ctrld_ops(fw_op, bw_op, lb, ub)
         if re[0]:
             ge.add_control_inputs(swapin_op, re[0])
             self.log_info(
