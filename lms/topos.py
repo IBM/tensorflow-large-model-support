@@ -5,12 +5,16 @@ from tensorflow.contrib.graph_editor import util
 
 
 class TOPOS(object):
-    def __init__(self, seed_ops, graph, incl_ops):
+    def __init__(self, seed_ops, graph, incl_ops, grad_ops):
         self.graph = graph
         self.seed_ops = seed_ops
+        self.grad_ops = grad_ops
 
         self.incl_ops = incl_ops
         self.topo_sort = {}
+        # These ops is a bw ops but there is no incoming ops that are bw ops.
+        # Execution order of these ops may depends on Tensorflow runtime.
+        self.nobwincoming_ops = set()
 
     def build_dependency_dict(self):
         open_set = Queue.Queue()
@@ -28,13 +32,13 @@ class TOPOS(object):
             dep_ops = set(src_op.control_inputs)
             for t in src_op.inputs:
                 dep_ops |= set(util.get_generating_ops(t))
-            dep_ops &= self.incl_ops
+            # dep_ops &= self.incl_ops
             dep_dict[src_op] = dep_ops
 
             next_ops = set()
             for t in src_op.outputs:
                 next_ops |= set(util.get_consuming_ops(t))
-            next_ops &= self.incl_ops
+            # next_ops &= self.incl_ops
             for op in next_ops:
                 if op in closed_set:
                     continue
@@ -48,7 +52,16 @@ class TOPOS(object):
     def build(self):
         topo_sort = list(tps(self.build_dependency_dict()))
         for i in range(0, len(topo_sort)):
-            self.topo_sort[i] = topo_sort[i]
+            dep_ops = topo_sort[i]
+            fw_dep_ops = dep_ops - self.grad_ops
+            bw_dep_ops = dep_ops & self.grad_ops
+            if fw_dep_ops:
+                self.nobwincoming_ops = bw_dep_ops
+                self.topo_sort[i] = fw_dep_ops
+            else:
+                self.topo_sort[i] = dep_ops
+
+            # print("[{}]: {}".format(i, [op.name for op in self.topo_sort[i]]))
 
     def get_order(self, op):
         result = -1
