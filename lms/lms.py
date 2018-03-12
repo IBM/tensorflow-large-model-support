@@ -56,9 +56,6 @@ class LMS(object):
         # for roundrobin scheduling
         self.currentSSG = False
 
-        # order used for some ctrld op
-        self.used_order = set()
-
     def find_ctrld_ops(self, fw_op, bw_op, lower_b, upper_b):
         '''Find a control dependency operation using chain rules.
         '''
@@ -73,9 +70,6 @@ class LMS(object):
 
         ctrld_order = -1
         for i in range(lower_b, upper_b):
-            if i in self.used_order:
-                continue
-
             candidates = self.topo_sort.get_ops(i)
             bw_candidates = set()
             for op in candidates:
@@ -86,7 +80,6 @@ class LMS(object):
             if bw_candidates:
                 result_ops |= bw_candidates
                 ctrld_order = i
-                self.used_order.add(i)
                 break
 
         if result_ops:
