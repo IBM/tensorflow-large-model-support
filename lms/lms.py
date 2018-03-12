@@ -72,8 +72,8 @@ class LMS(object):
         range_ub = src_order - lower_b
         range_lb = max([src_order - upper_b, fw_order]) + 1
 
-        self.log_info("Order {}, range: [{}-{}]".format(
-            src_order, range_lb, range_ub - 1), 1)
+        self.log_info("Finding ctrld_op for {}, order {}, in range: [{}-{}]".format(
+            src_op.name, src_order, range_lb, range_ub - 1), 1)
 
         ctrld_order = -1
         for i in reversed(range(range_lb, range_ub)):
