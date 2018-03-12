@@ -99,7 +99,6 @@ class LMS(object):
         reachable_ops = set()
         for seed_op in seed_ops:
             reachable_ops |= set(ge.get_forward_walk_ops(seed_op))
-            reachable_ops |= set(ge.get_backward_walk_ops(seed_op))
 
         # gradient ops
         self.grad_ops = set(ge.filter_ops_from_regex(
@@ -117,10 +116,7 @@ class LMS(object):
         self.excl_ops |= atomic_ops
 
         # build a topological sort
-        self.topo_sort = topos.TOPOS(
-            seed_ops, self.graph,
-            incl_ops=reachable_ops-self.grad_ops,
-            grad_ops=self.grad_ops)
+        self.topo_sort = topos.TOPOS(seed_ops, self.graph, self.grad_ops)
         self.topo_sort.build()
 
         self.do_action(seed_ops)
