@@ -259,8 +259,9 @@ class LMS(object):
                         earliest_op = None
                         for op in fuse_bw_frontier_ops:
                             order = self.topo_sort.get_order(op)
-                            min_order = min(min_order, order)
-                            earliest_op = op
+                            if order < min_order:
+                                min_order = order
+                                earliest_op = op
                         if earliest_op:
                             self.add_ctrld(src_op, earliest_op, swap_in.op,
                                            self.lb, self.ub)
