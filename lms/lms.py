@@ -4,34 +4,36 @@ from tensorflow.contrib.graph_editor import util
 
 import time
 import queue as Queue
+import lms.topos as topos
 
 
 class LMS(object):
-    # def __init__(self, graph, optimizer_scope=None, excl_scopes=set(),
     def __init__(self, graph, optimizer_scope=set(), excl_scopes=set(),
-                 first_layer=None,
+                 starting_scope=None,
                  lb=1, ub=10000,
                  n_tensors=0,
                  n_cpu_threads=1,  # experimental feature
                  ssg_n_tensors=0,  # the number of tensors for second storage
                  ssg_id="1",
                  ssg_as_buffer=False,
+                 fuse_swapins=False,
                  debug=False,
                  debug_level=1):
         if optimizer_scope is None:
             print("set the optimizer scope")
             return
-        if first_layer is None:
+        if starting_scope is None:
             print("set the first layer name")
             return
 
         self.graph = graph
         self.optimizer_scope = optimizer_scope
         self.excl_scopes = excl_scopes
-        self.first_layer = first_layer
+        self.starting_scope = starting_scope
         self.lb = lb  # lowerbound
         self.ub = ub  # upperbound
         self.n_tensors = n_tensors
+        self.fuse_swapins = fuse_swapins
 
         # Operations with these types will be ignored
         self.atomic_types = ['Const', 'Mul', 'Add',
@@ -40,6 +42,7 @@ class LMS(object):
 
         self.excl_ops = set()
         self.grad_ops = set()
+        self.topo_sort = None
         self.debug = debug
         self.debug_level = debug_level
 
@@ -53,12 +56,21 @@ class LMS(object):
         # for roundrobin scheduling
         self.currentSSG = False
 
-    def find_ctrld_ops(self, seed_op, grad_ops, lower_b, upper_b):  # BFS
+    def find_ctrld_ops_1(self, fw_op, bw_op, lower_b, upper_b):  # BFS
+        '''Find a control dependency operation using chain rules.
+        Go down along the forward phase to find corresponding bw ops
+        '''
+        if lower_b == 0:
+            return (None, -1)
+
+        fw_order = self.topo_sort.get_order(fw_op)
+        bw_order = self.topo_sort.get_order(bw_op)
+
         open_set1 = Queue.Queue()
         open_set2 = Queue.Queue()
         closed_set = set()
 
-        open_set1.put(seed_op)
+        open_set1.put(fw_op)
 
         result_ops = set()
         while not open_set1.empty():
@@ -72,17 +84,19 @@ class LMS(object):
             total_consumming_ops = set()
             for t in src_op.outputs:
                 consumming_ops = set(util.get_consuming_ops(t))
-                total_consumming_ops.update(consumming_ops)
+                total_consumming_ops |= consumming_ops
 
             if lower_b <= 0:
                 # inside the range
-                consumming_ops_bw = total_consumming_ops.intersection(grad_ops)
+                consumming_ops_bw = total_consumming_ops & self.grad_ops
                 if len(consumming_ops_bw) > 0:
-                    result_ops = consumming_ops_bw
-                    break
+                    result_ops |= consumming_ops_bw
+                    result_ops = {op
+                                  for op in result_ops 
+                                  if self.topo_sort.get_order(op) > fw_order}
 
             # go to the next level
-            next_ops = total_consumming_ops.difference(grad_ops)
+            next_ops = total_consumming_ops - self.grad_ops
             for op in next_ops:
                 if op in closed_set:
                     continue
@@ -91,55 +105,121 @@ class LMS(object):
 
             closed_set.add(src_op)
             if open_set1.empty():
+                if result_ops:
+                    if bw_op in result_ops:
+                        result_ops = set()
+                    else:
+                        break
                 lower_b = lower_b - 1
                 upper_b = upper_b - 1
                 while not open_set2.empty():
                     open_set1.put(open_set2.get())
-        return result_ops
+        if result_ops:
+            if bw_order >= 0:
+                for op in result_ops:
+                    order = self.topo_sort.get_order(op)
+                    if bw_order > order:  # valid dependency
+                        return (op, order)
+            else:
+                ctrld_op = next(iter(result_ops))
+                return (ctrld_op, self.topo_sort.get_order(ctrld_op))
+
+        return (None, -1)
+
+    def find_ctrld_ops(self, fw_op, src_op, lower_b, upper_b):
+        '''Find a control dependency operation using topological sort
+        '''
+        if lower_b == 0:
+            return (None, -1)
+
+        result_ops = set()
+
+        # offset ordering
+        fw_order = self.topo_sort.get_order(fw_op)
+        src_order = self.topo_sort.get_order(src_op)
+        if src_order < 0:
+            # try again
+            return self.find_ctrld_ops_1(fw_op, src_op, lower_b, upper_b)
+        range_ub = src_order - lower_b
+        range_lb = max([src_order - upper_b, fw_order]) + 1
+
+        self.log_info("Finding ctrld_op for {}, order {}, in range: [{}-{}]".format(
+            src_op.name, src_order, range_lb, range_ub - 1), 1)
+
+        # common ops
+        common_ops = set(ge.get_forward_walk_ops(fw_op)) | set(ge.get_backward_walk_ops(src_op))
+        ctrld_order = -1
+        for i in reversed(range(range_lb, range_ub)):
+            candidates = self.topo_sort.get_ops(i)
+            candidates &= common_ops
+            if candidates:
+                result_ops |= candidates
+                ctrld_order = i
+                break
+
+        if result_ops:
+            ctrld_op = next(iter(result_ops))
+            return (ctrld_op, ctrld_order)
+        else:
+            return (None, -1)
 
     def run(self):
-        log_info("Editing model for LMS")
+        self.log_info("Editing model for LMS")
         start_time = time.time()
 
         seed_ops = ge.filter_ops_from_regex(
-            ge.make_list_of_op(self.graph), "^{}".format(self.first_layer))
+            ge.make_list_of_op(self.graph), "^{}".format(self.starting_scope))
 
         reachable_ops = set()
         for seed_op in seed_ops:
-            reachable_ops.update(set(ge.get_forward_walk_ops(seed_op)))
+            reachable_ops |= set(ge.get_forward_walk_ops(seed_op))
 
         # gradient ops
         for scope in self.optimizer_scope:
-            self.grad_ops.update(
-                set(ge.filter_ops_from_regex(reachable_ops, scope)))
-            #    set(ge.get_name_scope_ops(reachable_ops, scope)))        
-        # self.grad_ops = set(
-        #    ge.get_name_scope_ops(reachable_ops, self.optimizer_scope))
+            self.grad_ops = set(ge.filter_ops_from_regex(
+                ge.make_list_of_op(self.graph), "^{}".format(
+                    scope)))
 
-        self.fw_reachable_ops = reachable_ops.difference(self.grad_ops)
-    
+        self.fw_reachable_ops = reachable_ops - self.grad_ops
+
         # exclusive ops
         for scope in self.excl_scopes:
-            self.excl_ops.update(
-                set(ge.get_name_scope_ops(reachable_ops, scope)))
+            self.excl_ops |= set(ge.get_name_scope_ops(reachable_ops, scope))
         # atomic ops
         atomic_ops = {op for op in self.fw_reachable_ops
                       if op.type in self.atomic_types}
-        self.excl_ops.update(atomic_ops)
+        self.excl_ops |= atomic_ops
+
+        # build a topological sort
+        self.topo_sort = topos.TOPOS(seed_ops, self.graph, self.grad_ops)
+        self.topo_sort.build()
+        for i in range(0, self.topo_sort.size):
+            self.log_info("[{}]: {}".format(
+                i, [op.name for op in self.topo_sort.get_ops(i)]), 1)
 
         self.do_action(seed_ops)
 
-        log_info("Editing model for LMS, took: {} ms".format(
+        # check the validation of the new model
+        new_reachable_ops = set()
+        for seed_op in seed_ops:
+            new_reachable_ops |= set(ge.get_forward_walk_ops(seed_op))
+        if (new_reachable_ops >= reachable_ops):
+            self.log_info("Edited model is valid and logically equivalent to the original one")
+            self.log_info("Added {} ops into the model".format(len(new_reachable_ops - reachable_ops)))
+        else:
+            self.log_info("Edited model is invalid. Running this may produce unexpected result")
+
+        self.log_info("Editing model for LMS, took: {} ms".format(
             (time.time()-start_time)/1000))
         if (self.ingpu_count > 0):
-            log_info(
+            self.log_info(
                 "{} tensors will be swapped out(in) to(from) GPU device {}".format(
                     self.ingpu_count, self.ssg_id))
             if self.ssg_as_buffer:
-                log_info(
+                self.log_info(
                     "The GPU device {} is just used as a buffer.".format(
                         self.ssg_id))
-        log_info(
+        self.log_info(
             "{} tensors will be swapped out(in) to(from) the host".format(
                 self.incpu_count))
 
@@ -157,7 +237,7 @@ class LMS(object):
             next_ops = set()
             for t in src_op.outputs:
                 frontier_ops = set(util.get_consuming_ops(t))
-                next_ops.update(frontier_ops.difference(self.grad_ops))
+                next_ops |= frontier_ops - self.grad_ops
 
             # do action for src_op
             self.insert_swnodes(src_op)
@@ -167,17 +247,16 @@ class LMS(object):
                     continue
                 if op not in open_set.queue:
                     open_set.put(op)
-            
+
             closed_set.add(src_op)
-      
+
     def insert_swnodes(self, src_op):
-        if self.debug and self.debug_level >= 2:
-            log_info("my op: {}".format(src_op))
+        self.log_info("Operation: {}".format(src_op), 2)
 
         # bypass exclusive ops
         if src_op in self.excl_ops:
             return
-    
+
         for t in src_op.outputs:
             if self.n_tensors > 0:
                 if self.ingpu_count > 0:
@@ -188,22 +267,21 @@ class LMS(object):
                         return
 
             frontier_ops = set(util.get_consuming_ops(t))
-            if self.debug and self.debug_level >= 2:
-                log_info("my frontier ops: {}".format(frontier_ops))
+            self.log_info("my frontier ops: {}".format(frontier_ops), 2)
 
-            bw_frontier_ops = frontier_ops.intersection(self.grad_ops)
+            bw_frontier_ops = frontier_ops & self.grad_ops
+            self.log_info("my bw frontier ops: {}".format(bw_frontier_ops), 2)
 
-            if self.debug and self.debug_level >= 2:
-                log_info("my bw frontier ops: {}".format(bw_frontier_ops))
-      
             if not bw_frontier_ops:
                 continue
-              
+
             # swap-out node
             swap_out_sgv = None
             src_out_idx = None
             # create swap-out node only if the current op has gradient or branch
             if bw_frontier_ops:  # TODO: check branch also
+                self.log_info("Operation: {}, order {}".format(
+                    src_op.name, self.topo_sort.get_order(src_op)), 1)
                 ts0 = None
                 with tf.device(self.get_ext_device(True)):
                     src_sgv = ge.sgv(src_op, graph=self.graph)
@@ -213,7 +291,7 @@ class LMS(object):
 
                     swap_out = tf.identity(
                         ts0,
-                        name = 'swap_out_' + src_op.name.replace('/', '_'))
+                        name='swap_out_' + src_op.name.replace('/', '_'))
                     swap_out_sgv = ge.sgv(swap_out.op, graph=self.graph)
 
                     # get output index
@@ -223,49 +301,88 @@ class LMS(object):
                     connect_sgv(src_sgv, swap_out_sgv,
                                 remap_outputs=True, idx=src_out_idx)
                     self.excl_ops.add(swap_out.op)
-                    if self.debug and self.debug_level >= 1:
-                        log_info(
-                            "Tensor {} will be placed on {}".format(
-                                ts0.name, self.get_ext_device()))
+                    self.log_info("Tensor {} will be placed on {}".format(
+                        ts0.name, self.get_ext_device()), 1)
 
                 if self.ssg_as_buffer and ("GPU" in self.get_ext_device()):
                     with tf.device("/cpu:0"):
                         swap_out0 = tf.identity(
                             ts0,
-                            name = 'swap_out0_' + src_op.name.replace('/', '_'))
+                            name='swap_out0_' + src_op.name.replace('/', '_'))
                         swap_out0_sgv = ge.sgv(swap_out0.op, graph=self.graph)
                         connect_sgv(swap_out_sgv, swap_out0_sgv)
                         self.excl_ops.add(swap_out0.op)
                         swap_out_sgv = swap_out0_sgv
 
-            # swap_in nodes
-            for dest_op in bw_frontier_ops:  # TODO: swap_in nodes for branches
-                dest_sgv = ge.sgv(dest_op, graph=self.graph)
-                ts = ge.filter_ts_from_regex(dest_op, src_op.name)
+                # swap_in nodes
+                # TODO: swap_in nodes for branches
+                if self.fuse_swapins:
+                    fuse_bw_frontier_ops = {
+                        op for op in bw_frontier_ops
+                        if self.topo_sort.get_order(op) > 0}
+                    if fuse_bw_frontier_ops:
+                        dev = "/cpu:0" if self.ssg_as_buffer else self.get_ext_device()
+                        with tf.device(dev):
+                            swap_in = tf.identity(
+                                ts0,
+                                name='swap_in_' + src_op.name.replace('/', '_'))
+                            swap_in_sgv = ge.sgv(swap_in.op, graph=self.graph)
 
-                dev = "/cpu:0" if self.ssg_as_buffer else self.get_ext_device()
-                with tf.device(dev):
-                    swap_in = tf.identity(
-                        ts[0],
-                        name = 'swap_in_' + dest_op.name.replace('/', '_'))
-                    swap_in_sgv = ge.sgv(swap_in.op, graph=self.graph)
+                        # Connect: swap_out -> swap_in
+                        connect_sgv(swap_out_sgv, swap_in_sgv)
+                        self.excl_ops.add(swap_in.op)
 
-                # Connect: swap_out -> swap_in
-                connect_sgv(swap_out_sgv, swap_in_sgv)
+                        # reuse swap_in tensors
+                        for op in fuse_bw_frontier_ops:
+                            op_sgv = ge.sgv(op, graph=self.graph)
+                            ts = ge.filter_ts_from_regex(op, src_op.name)
+                            # Connect: swap_in -> dest
+                            input_idx = op_sgv.input_index(ts[0])
+                            connect_sgv(swap_in_sgv, op_sgv,
+                                        remap_inputs=True, idx=input_idx)
 
-                # Connect: swap_in -> dest
-                input_idx = dest_sgv.input_index(ts[0])
-                connect_sgv(swap_in_sgv, dest_sgv,
-                            remap_inputs=True, idx=input_idx)
-                self.excl_ops.add(swap_in.op)
+                            self.log_info("{} reuses tensor {}".format(
+                                op.name, ts[0].name), 1)
 
-                # control dependency -> swap_in
-                ctrld_ops = self.find_ctrld_ops(
-                    src_op, self.grad_ops, self.lb, self.ub)
-                if dest_op in ctrld_ops:
-                    ctrld_ops.remove(dest_op)
-                if ctrld_ops:
-                    ge.add_control_inputs(swap_in.op, next(iter(ctrld_ops)))
+                        # control dependency -> swap_in
+                        min_order = self.topo_sort.size + 1
+                        earliest_op = None
+                        for op in fuse_bw_frontier_ops:
+                            order = self.topo_sort.get_order(op)
+                            if order < min_order:
+                                min_order = order
+                                earliest_op = op
+                        if earliest_op:
+                            self.add_ctrld(src_op, earliest_op, swap_in.op,
+                                           self.lb, self.ub)
+                        bw_frontier_ops -= fuse_bw_frontier_ops
+
+                for dest_op in bw_frontier_ops:
+                    dest_sgv = ge.sgv(dest_op, graph=self.graph)
+                    ts = ge.filter_ts_from_regex(dest_op, src_op.name)
+
+                    dev = "/cpu:0" if self.ssg_as_buffer else self.get_ext_device()
+                    with tf.device(dev):
+                        swap_in = tf.identity(
+                            ts[0],
+                            name='swap_in_' + dest_op.name.replace('/', '_'))
+                        swap_in_sgv = ge.sgv(swap_in.op, graph=self.graph)
+
+                    # Connect: swap_out -> swap_in
+                    connect_sgv(swap_out_sgv, swap_in_sgv)
+
+                    # Connect: swap_in -> dest
+                    input_idx = dest_sgv.input_index(ts[0])
+                    connect_sgv(swap_in_sgv, dest_sgv,
+                                remap_inputs=True, idx=input_idx)
+                    self.excl_ops.add(swap_in.op)
+                    self.log_info("Consuming op {} (order {}) swaps in {}".format(
+                        dest_op.name, self.topo_sort.get_order(dest_op),
+                        ts[0].name), 1)
+
+                    # control dependency -> swap_in
+                    self.add_ctrld(src_op, dest_op, swap_in.op,
+                                   self.lb, self.ub)
 
     def get_ext_device(self, update=False):
         return self.roundrobin_ext_device(update)
@@ -276,7 +393,7 @@ class LMS(object):
             if update:
                 self.incpu_count = self.incpu_count + 1
                 self.currentSSG = False
-                return  "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
+                return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
             else:
                 # get only
                 return "/device:GPU:{}".format(self.ssg_id)
@@ -290,13 +407,27 @@ class LMS(object):
                 else:  # otherwise, use host
                     self.incpu_count = self.incpu_count + 1
                     self.currentSSG = False
-                    return  "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
+                    return "/cpu:{}".format(
+                        self.incpu_count % self.n_cpu_threads)
             else:
                 # get only
-                return  "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
-        
-def log_info(message):
-    print("[LMS] {}".format(message))
+                return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
+
+    def add_ctrld(self, fw_op, bw_op, swapin_op, lb, ub):
+        re = self.find_ctrld_ops_1(fw_op, bw_op, lb, ub)
+        # re = self.find_ctrld_ops(fw_op, bw_op, lb, ub)
+        if re[0]:
+            ge.add_control_inputs(swapin_op, re[0])
+            self.log_info(
+                "Control dependency op {},  order: {}".format(
+                    re[0].name, re[1]), 1)
+
+    def log_info(self, message, level=0):
+        if level == 0 or (self.debug and self.debug_level >= level):
+            # Use tf.logging.info instead of print, since print
+            # is not thread safe, which can break tests.
+            tf.logging.info("[LMS][{}] {}".format(level, message))
+
 
 def connect_sgv(src_sgv, dest_sgv,
                 remap_inputs=False, remap_outputs=False,
@@ -307,4 +438,3 @@ def connect_sgv(src_sgv, dest_sgv,
         dest_sgv = dest_sgv.remap_inputs([idx])
 
     ge.connect(src_sgv, dest_sgv, disconnect_first)
-
