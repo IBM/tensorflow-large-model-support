@@ -58,8 +58,6 @@ class TOPOS(object):
             else:
                 self.topo_sort[i] = dep_ops
 
-            # print("[{}]: {}".format(i, [op.name for op in self.topo_sort[i]]))
-
     def get_order(self, op):
         result = -1
         for order, dep_ops in self.topo_sort.items():

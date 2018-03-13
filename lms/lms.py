@@ -56,8 +56,78 @@ class LMS(object):
         # for roundrobin scheduling
         self.currentSSG = False
 
-    def find_ctrld_ops(self, fw_op, src_op, lower_b, upper_b):
+    def find_ctrld_ops_1(self, fw_op, bw_op, lower_b, upper_b):  # BFS
         '''Find a control dependency operation using chain rules.
+        Go down along the forward phase to find corresponding bw ops
+        '''
+        if lower_b == 0:
+            return (None, -1)
+
+        fw_order = self.topo_sort.get_order(fw_op)
+        bw_order = self.topo_sort.get_order(bw_op)
+
+        open_set1 = Queue.Queue()
+        open_set2 = Queue.Queue()
+        closed_set = set()
+
+        open_set1.put(fw_op)
+
+        result_ops = set()
+        while not open_set1.empty():
+            # stop if reaching the upperbound
+            if upper_b == 0 or (lower_b > upper_b):
+                break
+
+            src_op = open_set1.get()
+
+            # do action for src_op
+            total_consumming_ops = set()
+            for t in src_op.outputs:
+                consumming_ops = set(util.get_consuming_ops(t))
+                total_consumming_ops |= consumming_ops
+
+            if lower_b <= 0:
+                # inside the range
+                consumming_ops_bw = total_consumming_ops & self.grad_ops
+                if len(consumming_ops_bw) > 0:
+                    result_ops |= consumming_ops_bw
+                    result_ops = {op
+                                  for op in result_ops 
+                                  if self.topo_sort.get_order(op) > fw_order}
+
+            # go to the next level
+            next_ops = total_consumming_ops - self.grad_ops
+            for op in next_ops:
+                if op in closed_set:
+                    continue
+                if op not in open_set2.queue:
+                    open_set2.put(op)
+
+            closed_set.add(src_op)
+            if open_set1.empty():
+                if result_ops:
+                    if bw_op in result_ops:
+                        result_ops = set()
+                    else:
+                        break
+                lower_b = lower_b - 1
+                upper_b = upper_b - 1
+                while not open_set2.empty():
+                    open_set1.put(open_set2.get())
+        if result_ops:
+            if bw_order >= 0:
+                for op in result_ops:
+                    order = self.topo_sort.get_order(op)
+                    if bw_order > order:  # valid dependency
+                        return (op, order)
+            else:
+                ctrld_op = next(iter(result_ops))
+                return (ctrld_op, self.topo_sort.get_order(ctrld_op))
+
+        return (None, -1)
+
+    def find_ctrld_ops(self, fw_op, src_op, lower_b, upper_b):
+        '''Find a control dependency operation using topological sort
         '''
         if lower_b == 0:
             return (None, -1)
@@ -68,16 +138,20 @@ class LMS(object):
         fw_order = self.topo_sort.get_order(fw_op)
         src_order = self.topo_sort.get_order(src_op)
         if src_order < 0:
-            return (None, -1)
+            # try again
+            return self.find_ctrld_ops_1(fw_op, src_op, lower_b, upper_b)
         range_ub = src_order - lower_b
         range_lb = max([src_order - upper_b, fw_order]) + 1
 
         self.log_info("Finding ctrld_op for {}, order {}, in range: [{}-{}]".format(
             src_op.name, src_order, range_lb, range_ub - 1), 1)
 
+        # common ops
+        common_ops = set(ge.get_forward_walk_ops(fw_op)) | set(ge.get_backward_walk_ops(src_op))
         ctrld_order = -1
         for i in reversed(range(range_lb, range_ub)):
             candidates = self.topo_sort.get_ops(i)
+            candidates &= common_ops
             if candidates:
                 result_ops |= candidates
                 ctrld_order = i
@@ -118,8 +192,21 @@ class LMS(object):
         # build a topological sort
         self.topo_sort = topos.TOPOS(seed_ops, self.graph, self.grad_ops)
         self.topo_sort.build()
+        for i in range(0, self.topo_sort.size):
+            self.log_info("[{}]: {}".format(
+                i, [op.name for op in self.topo_sort.get_ops(i)]), 1)
 
         self.do_action(seed_ops)
+
+        # check the validation of the new model
+        new_reachable_ops = set()
+        for seed_op in seed_ops:
+            new_reachable_ops |= set(ge.get_forward_walk_ops(seed_op))
+        if (new_reachable_ops >= reachable_ops):
+            self.log_info("Edited model is valid and logically equivalent to the original one")
+            self.log_info("Added {} ops into the model".format(len(new_reachable_ops - reachable_ops)))
+        else:
+            self.log_info("Edited model is invalid. Running this may produce unexpected result")
 
         self.log_info("Editing model for LMS, took: {} ms".format(
             (time.time()-start_time)/1000))
@@ -192,6 +279,8 @@ class LMS(object):
             src_out_idx = None
             # create swap-out node only if the current op has gradient or branch
             if bw_frontier_ops:  # TODO: check branch also
+                self.log_info("Operation: {}, order {}".format(
+                    src_op.name, self.topo_sort.get_order(src_op)), 1)
                 ts0 = None
                 with tf.device(self.get_ext_device(True)):
                     src_sgv = ge.sgv(src_op, graph=self.graph)
@@ -286,8 +375,9 @@ class LMS(object):
                     connect_sgv(swap_in_sgv, dest_sgv,
                                 remap_inputs=True, idx=input_idx)
                     self.excl_ops.add(swap_in.op)
-                    self.log_info("Consuming op {} swaps in {}".format(
-                        dest_op.name, ts[0].name), 1)
+                    self.log_info("Consuming op {} (order {}) swaps in {}".format(
+                        dest_op.name, self.topo_sort.get_order(dest_op),
+                        ts[0].name), 1)
 
                     # control dependency -> swap_in
                     self.add_ctrld(src_op, dest_op, swap_in.op,
@@ -323,7 +413,8 @@ class LMS(object):
                 return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
 
     def add_ctrld(self, fw_op, bw_op, swapin_op, lb, ub):
-        re = self.find_ctrld_ops(fw_op, bw_op, lb, ub)
+        re = self.find_ctrld_ops_1(fw_op, bw_op, lb, ub)
+        # re = self.find_ctrld_ops(fw_op, bw_op, lb, ub)
         if re[0]:
             ge.add_control_inputs(swapin_op, re[0])
             self.log_info(
