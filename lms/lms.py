@@ -176,9 +176,9 @@ class LMS(object):
 
         # gradient ops
         for scope in self.optimizer_scope:
-            self.grad_ops = set(ge.filter_ops_from_regex(
-                ge.make_list_of_op(self.graph), "^{}".format(
-                    scope)))
+            self.grad_ops.update(
+                set(ge.filter_ops_from_regex(
+                    ge.make_list_of_op(self.graph), "^{}".format(scope))))
 
         self.fw_reachable_ops = reachable_ops - self.grad_ops
 
