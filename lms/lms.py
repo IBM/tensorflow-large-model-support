@@ -56,8 +56,63 @@ class LMS(object):
         # for roundrobin scheduling
         self.currentSSG = False
 
-    def find_ctrld_ops(self, fw_op, src_op, lower_b, upper_b):
+    def find_ctrld_ops_1(self, seed_op, bw_op, lower_b, upper_b):  # BFS
         '''Find a control dependency operation using chain rules.
+        Go down along the forward phase to find corresponding bw ops
+        '''
+        open_set1 = Queue.Queue()
+        open_set2 = Queue.Queue()
+        closed_set = set()
+
+        open_set1.put(seed_op)
+
+        result_ops = set()
+        while not open_set1.empty():
+            # stop if reaching the upperbound
+            if upper_b == 0 or (lower_b > upper_b):
+                break
+
+            src_op = open_set1.get()
+
+            # do action for src_op
+            total_consumming_ops = set()
+            for t in src_op.outputs:
+                consumming_ops = set(util.get_consuming_ops(t))
+                total_consumming_ops |= consumming_ops
+
+            if lower_b <= 0:
+                # inside the range
+                consumming_ops_bw = total_consumming_ops & self.grad_ops
+                if len(consumming_ops_bw) > 0:
+                    result_ops |= consumming_ops_bw
+
+            # go to the next level
+            next_ops = total_consumming_ops - self.grad_ops
+            for op in next_ops:
+                if op in closed_set:
+                    continue
+                if op not in open_set2.queue:
+                    open_set2.put(op)
+
+            closed_set.add(src_op)
+            if open_set1.empty():
+                if result_ops:
+                    if bw_op in result_ops:
+                        result_ops = set()
+                    else:
+                        break
+                lower_b = lower_b - 1
+                upper_b = upper_b - 1
+                while not open_set2.empty():
+                    open_set1.put(open_set2.get())
+        if result_ops:
+            ctrld_op = next(iter(result_ops))
+            return (ctrld_op, self.topo_sort.get_order(ctrld_op))
+        else:
+            return (None, -1)
+
+    def find_ctrld_ops(self, fw_op, src_op, lower_b, upper_b):
+        '''Find a control dependency operation using topological sort
         '''
         if lower_b == 0:
             return (None, -1)
@@ -68,16 +123,20 @@ class LMS(object):
         fw_order = self.topo_sort.get_order(fw_op)
         src_order = self.topo_sort.get_order(src_op)
         if src_order < 0:
-            return (None, -1)
+            # try again
+            return self.find_ctrld_ops_1(fw_op, src_op, lower_b, upper_b)
         range_ub = src_order - lower_b
         range_lb = max([src_order - upper_b, fw_order]) + 1
 
         self.log_info("Finding ctrld_op for {}, order {}, in range: [{}-{}]".format(
             src_op.name, src_order, range_lb, range_ub - 1), 1)
 
+        # common ops
+        common_ops = set(ge.get_forward_walk_ops(fw_op)) | set(ge.get_backward_walk_ops(src_op))
         ctrld_order = -1
         for i in reversed(range(range_lb, range_ub)):
             candidates = self.topo_sort.get_ops(i)
+            candidates &= common_ops
             if candidates:
                 result_ops |= candidates
                 ctrld_order = i
@@ -118,6 +177,9 @@ class LMS(object):
         # build a topological sort
         self.topo_sort = topos.TOPOS(seed_ops, self.graph, self.grad_ops)
         self.topo_sort.build()
+        for i in range(0, self.topo_sort.size):
+            self.log_info("[{}]: {}".format(
+                i, [op.name for op in self.topo_sort.get_ops(i)]), 1)
 
         self.do_action(seed_ops)
 
