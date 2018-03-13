@@ -192,6 +192,16 @@ class LMS(object):
 
         self.do_action(seed_ops)
 
+        # check the validation of the new model
+        new_reachable_ops = set()
+        for seed_op in seed_ops:
+            new_reachable_ops |= set(ge.get_forward_walk_ops(seed_op))
+        if (new_reachable_ops >= reachable_ops):
+            self.log_info("Edited model is valid and logically equivalent to the original one")
+            self.log_info("Added {} ops into the model".format(len(new_reachable_ops - reachable_ops)))
+        else:
+            self.log_info("Edited model is invalid. Running this may produce unexpected result")
+
         self.log_info("Editing model for LMS, took: {} ms".format(
             (time.time()-start_time)/1000))
         if (self.ingpu_count > 0):
@@ -234,7 +244,6 @@ class LMS(object):
             closed_set.add(src_op)
 
     def insert_swnodes(self, src_op):
-        self.log_info("Operation: {}, order {}".format(src_op.name, self.topo_sort.get_order(src_op)), 1)
         self.log_info("Operation: {}".format(src_op), 2)
 
         # bypass exclusive ops
@@ -264,6 +273,8 @@ class LMS(object):
             src_out_idx = None
             # create swap-out node only if the current op has gradient or branch
             if bw_frontier_ops:  # TODO: check branch also
+                self.log_info("Operation: {}, order {}".format(
+                    src_op.name, self.topo_sort.get_order(src_op)), 1)
                 ts0 = None
                 with tf.device(self.get_ext_device(True)):
                     src_sgv = ge.sgv(src_op, graph=self.graph)
