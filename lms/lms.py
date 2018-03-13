@@ -56,15 +56,21 @@ class LMS(object):
         # for roundrobin scheduling
         self.currentSSG = False
 
-    def find_ctrld_ops_1(self, seed_op, bw_op, lower_b, upper_b):  # BFS
+    def find_ctrld_ops_1(self, fw_op, src_op, lower_b, upper_b):  # BFS
         '''Find a control dependency operation using chain rules.
         Go down along the forward phase to find corresponding bw ops
         '''
+        if lower_b == 0:
+            return (None, -1)
+
+        fw_order = self.topo_sort.get_order(fw_op)
+        src_order = self.topo_sort.get_order(src_op)
+
         open_set1 = Queue.Queue()
         open_set2 = Queue.Queue()
         closed_set = set()
 
-        open_set1.put(seed_op)
+        open_set1.put(fw_op)
 
         result_ops = set()
         while not open_set1.empty():
@@ -85,6 +91,9 @@ class LMS(object):
                 consumming_ops_bw = total_consumming_ops & self.grad_ops
                 if len(consumming_ops_bw) > 0:
                     result_ops |= consumming_ops_bw
+                    result_ops = {op
+                                  for op in result_ops 
+                                  if self.topo_sort.get_order(op) > fw_order}
 
             # go to the next level
             next_ops = total_consumming_ops - self.grad_ops
@@ -97,7 +106,7 @@ class LMS(object):
             closed_set.add(src_op)
             if open_set1.empty():
                 if result_ops:
-                    if bw_op in result_ops:
+                    if src_op in result_ops:
                         result_ops = set()
                     else:
                         break
@@ -225,6 +234,7 @@ class LMS(object):
             closed_set.add(src_op)
 
     def insert_swnodes(self, src_op):
+        self.log_info("Operation: {}, order {}".format(src_op.name, self.topo_sort.get_order(src_op)), 1)
         self.log_info("Operation: {}".format(src_op), 2)
 
         # bypass exclusive ops
@@ -348,8 +358,9 @@ class LMS(object):
                     connect_sgv(swap_in_sgv, dest_sgv,
                                 remap_inputs=True, idx=input_idx)
                     self.excl_ops.add(swap_in.op)
-                    self.log_info("Consuming op {} swaps in {}".format(
-                        dest_op.name, ts[0].name), 1)
+                    self.log_info("Consuming op {} (order {}) swaps in {}".format(
+                        dest_op.name, self.topo_sort.get_order(dest_op),
+                        ts[0].name), 1)
 
                     # control dependency -> swap_in
                     self.add_ctrld(src_op, dest_op, swap_in.op,
@@ -385,7 +396,8 @@ class LMS(object):
                 return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
 
     def add_ctrld(self, fw_op, bw_op, swapin_op, lb, ub):
-        re = self.find_ctrld_ops(fw_op, bw_op, lb, ub)
+        re = self.find_ctrld_ops_1(fw_op, bw_op, lb, ub)
+        # re = self.find_ctrld_ops(fw_op, bw_op, lb, ub)
         if re[0]:
             ge.add_control_inputs(swapin_op, re[0])
             self.log_info(
