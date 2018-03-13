@@ -423,7 +423,9 @@ class LMS(object):
 
     def log_info(self, message, level=0):
         if level == 0 or (self.debug and self.debug_level >= level):
-            print("[LMS][{}] {}".format(level, message))
+            # Use tf.logging.info instead of print, since print
+            # is not thread safe, which can break tests.
+            tf.logging.info("[LMS][{}] {}".format(level, message))
 
 
 def connect_sgv(src_sgv, dest_sgv,
