@@ -115,10 +115,16 @@ class LMS(object):
                 while not open_set2.empty():
                     open_set1.put(open_set2.get())
         if result_ops:
-            ctrld_op = next(iter(result_ops))
-            return (ctrld_op, self.topo_sort.get_order(ctrld_op))
-        else:
-            return (None, -1)
+            if bw_order >= 0:
+                for op in result_ops:
+                    order = self.topo_sort.get_order(op)
+                    if bw_order > order:  # valid dependency
+                        return (op, order)
+            else:
+                ctrld_op = next(iter(result_ops))
+                return (ctrld_op, self.topo_sort.get_order(ctrld_op))
+
+        return (None, -1)
 
     def find_ctrld_ops(self, fw_op, src_op, lower_b, upper_b):
         '''Find a control dependency operation using topological sort
