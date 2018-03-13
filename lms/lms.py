@@ -9,7 +9,7 @@ import lms.topos as topos
 
 class LMS(object):
     def __init__(self, graph, optimizer_scope=None, excl_scopes=set(),
-                 first_layer=None,
+                 starting_scope=None,
                  lb=1, ub=10000,
                  n_tensors=0,
                  n_cpu_threads=1,  # experimental feature
@@ -22,14 +22,14 @@ class LMS(object):
         if optimizer_scope is None:
             print("set the optimizer scope")
             return
-        if first_layer is None:
+        if starting_scope is None:
             print("set the first layer name")
             return
 
         self.graph = graph
         self.optimizer_scope = optimizer_scope
         self.excl_scopes = excl_scopes
-        self.first_layer = first_layer
+        self.starting_scope = starting_scope
         self.lb = lb  # lowerbound
         self.ub = ub  # upperbound
         self.n_tensors = n_tensors
@@ -168,7 +168,7 @@ class LMS(object):
         start_time = time.time()
 
         seed_ops = ge.filter_ops_from_regex(
-            ge.make_list_of_op(self.graph), "^{}".format(self.first_layer))
+            ge.make_list_of_op(self.graph), "^{}".format(self.starting_scope))
 
         reachable_ops = set()
         for seed_op in seed_ops:
