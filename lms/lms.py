@@ -316,14 +316,6 @@ class LMS(object):
             closed_set.add(src_op)
 
     def insert_swnodes(self, src_op):
-        if self.n_tensors > 0:
-            if self.ingpu_count > 0:
-                if (self.ingpu_count + self.incpu_count) >= self.n_tensors:
-                    return  # swap enough
-            else:
-                if (self.incpu_count) >= self.n_tensors:
-                    return
-
         self.log_info("Operation: {}".format(src_op), 2)
 
         # bypass exclusive ops
@@ -331,6 +323,14 @@ class LMS(object):
             return
 
         for t in src_op.outputs:
+            if self.n_tensors > 0:
+                if self.ingpu_count > 0:
+                    if (self.ingpu_count + self.incpu_count) >= self.n_tensors:
+                        return  # swap enough
+                else:
+                    if (self.incpu_count) >= self.n_tensors:
+                        return
+
             frontier_ops = set(util.get_consuming_ops(t))
             self.log_info("my frontier ops: {}".format(frontier_ops), 2)
 
@@ -354,6 +354,7 @@ class LMS(object):
                     ts = ge.filter_ts_from_regex(sample_op, src_op.name)
                     ts0 = ts[0]
 
+                    # TODO: put this op into the same scope as src_op
                     swap_out = tf.identity(
                         ts0,
                         name='swap_out_' + src_op.name.replace('/', '_'))
@@ -387,6 +388,7 @@ class LMS(object):
                         if self.topo_sort.get_order(op) > 0}
                     if fuse_bw_frontier_ops:
                         dev = "/cpu:0" if self.ssg_as_buffer else self.get_ext_device()
+                        # TODO: put this op into the same scope as dest_op
                         with tf.device(dev):
                             swap_in = tf.identity(
                                 ts0,
@@ -406,8 +408,8 @@ class LMS(object):
                             connect_sgv(swap_in_sgv, op_sgv,
                                         remap_inputs=True, idx=input_idx)
 
-                            self.log_info("{} reuses tensor {}".format(
-                                op.name, ts[0].name), 1)
+                            self.log_info("{} (order {}) reuses tensor {}".format(
+                                self.topo_sort.get_order(op), op.name, ts[0].name), 1)
 
                         # control dependency -> swap_in
                         min_order = self.topo_sort.size + 1
@@ -499,11 +501,13 @@ class LMS(object):
         else:
             re = self.do_down_and_get(fw_op, bw_op, lb, ub)
 
-        if re[0]:
-            ge.add_control_inputs(swapin_op, re[0])
+        ctrld_op = re[0]
+        ctrld_order = re[1]
+        if ctrld_op:
+            ge.add_control_inputs(swapin_op, ctrld_op)
             self.log_info(
                 "Control dependency op {},  order: {}".format(
-                    re[0].name, re[1]), 1)
+                    ctrld_op.name, ctrld_order), 1)
         else:
             self.log_info("No control dependency op", 1)
 

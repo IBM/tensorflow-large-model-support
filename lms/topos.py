@@ -1,8 +1,8 @@
 import queue as Queue
 from toposort import toposort as tps
 
+import tensorflow.contrib.graph_editor as ge
 from tensorflow.contrib.graph_editor import util
-
 
 class TOPOS(object):
     def __init__(self, seed_ops, graph, grad_ops):
@@ -11,6 +11,7 @@ class TOPOS(object):
         self.grad_ops = grad_ops
 
         self.topo_sort = {}
+        self.bw_starting_order_ = -1
 
     def build_dependency_dict(self):
         open_set = Queue.Queue()
@@ -43,10 +44,9 @@ class TOPOS(object):
 
         return dep_dict
 
-    def build(self):
-        topo_sort = list(tps(self.build_dependency_dict()))
-        for i in range(0, len(topo_sort)):
-            dep_ops = topo_sort[i]
+    def clean_bw_ops(self):
+        for i in range(0, len(self.topo_sort)):
+            dep_ops = self.topo_sort[i]
 
             # There are ops that is a bw ops but there is no incoming ops that are bw ops.
             # Execution order of these ops may depend on Tensorflow runtime.
@@ -56,6 +56,39 @@ class TOPOS(object):
                 self.topo_sort[i] = fw_dep_ops
             else:
                 self.topo_sort[i] = dep_ops
+
+    def clean_nonbw_ops(self):
+        for i in range(self.bw_starting_order_, len(self.topo_sort)):
+            ops = self.topo_sort[i]
+            self.topo_sort[i] = ops & self.grad_ops
+        # reindexing
+        topo_sort = {}
+        index = 0
+        for i in range(0, len(self.topo_sort)):
+            ops = self.topo_sort[i]
+            if ops:
+                topo_sort[index] = ops
+                index += 1
+        self.topo_sort = topo_sort
+
+    def build(self):
+        topo_sort = list(tps(self.build_dependency_dict()))
+        for i in range(0, len(topo_sort)):
+            self.topo_sort[i] = topo_sort[i]
+    
+        # if a bw op has the same order with a fw op,
+        # then remove the bw op
+        self.clean_bw_ops()
+
+        for i in range(0, len(self.topo_sort)):
+            ops = self.topo_sort[i]
+            if (ops & self.grad_ops):
+                self.bw_starting_order_ = i
+                break
+
+        # if there are non-bw ops in the bw phase,
+        # then remove them, and do reordering
+        self.clean_nonbw_ops()
 
     def get_order(self, op):
         result = -1
@@ -71,3 +104,7 @@ class TOPOS(object):
     @property
     def size(self):
         return len(self.topo_sort)
+
+    @property
+    def bw_starting_order(self):
+        return self.bw_starting_order_
