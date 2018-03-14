@@ -11,9 +11,6 @@ class TOPOS(object):
         self.grad_ops = grad_ops
 
         self.topo_sort = {}
-        # These ops is a bw ops but there is no incoming ops that are bw ops.
-        # Execution order of these ops may depend on Tensorflow runtime.
-        self.nobwincoming_ops = set()
 
     def build_dependency_dict(self):
         open_set = Queue.Queue()
@@ -50,10 +47,12 @@ class TOPOS(object):
         topo_sort = list(tps(self.build_dependency_dict()))
         for i in range(0, len(topo_sort)):
             dep_ops = topo_sort[i]
+
+            # There are ops that is a bw ops but there is no incoming ops that are bw ops.
+            # Execution order of these ops may depend on Tensorflow runtime.
             fw_dep_ops = dep_ops - self.grad_ops
             bw_dep_ops = dep_ops & self.grad_ops
             if fw_dep_ops:
-                self.nobwincoming_ops = bw_dep_ops
                 self.topo_sort[i] = fw_dep_ops
             else:
                 self.topo_sort[i] = dep_ops

@@ -5,7 +5,11 @@ from tensorflow.contrib.graph_editor import util
 import time
 import queue as Queue
 import lms.topos as topos
+from enum import Enum, auto
 
+class CTRLD_Strategy(Enum):
+    DOWN_AND_GET = auto()
+    DIRECT_ORDER = auto()
 
 class LMS(object):
     def __init__(self, graph, optimizer_scope=None, excl_scopes=set(),
@@ -17,13 +21,14 @@ class LMS(object):
                  ssg_id="1",
                  ssg_as_buffer=False,
                  fuse_swapins=False,
+                 ctrld_strategy="down_and_get",
                  debug=False,
                  debug_level=1):
         if optimizer_scope is None:
             print("set the optimizer scope")
             return
         if starting_scope is None:
-            print("set the first layer name")
+            print("set the starting scope")
             return
 
         self.graph = graph
@@ -34,6 +39,13 @@ class LMS(object):
         self.ub = ub  # upperbound
         self.n_tensors = n_tensors
         self.fuse_swapins = fuse_swapins
+        if ctrld_strategy == "down_and_get":
+            self.ctrld_strategy = CTRLD_Strategy.DOWN_AND_GET
+        elif ctrld_strategy == "direct_order":
+            self.ctrld_strategy = CTRLD_Strategy.DIRECT_ORDER
+        else:
+            self.log_info("Invalid value for ctrld_strategy.")
+            return
 
         # Operations with these types will be ignored
         self.atomic_types = ['Const', 'Mul', 'Add',
@@ -56,7 +68,7 @@ class LMS(object):
         # for roundrobin scheduling
         self.currentSSG = False
 
-    def find_ctrld_ops_1(self, fw_op, bw_op, lower_b, upper_b):  # BFS
+    def do_down_and_get(self, fw_op, bw_op, lower_b, upper_b):  # BFS
         '''Find a control dependency operation using chain rules.
         Go down along the forward phase to find corresponding bw ops
         '''
@@ -126,7 +138,31 @@ class LMS(object):
 
         return (None, -1)
 
-    def find_ctrld_ops(self, fw_op, src_op, lower_b, upper_b):
+    def find_nco(self, fw_op, bw_op):
+        '''Find the nearest common ops in reachable ops of two given ops
+        '''
+        frontier_ops = set()
+        for t in fw_op.outputs:
+            frontier_ops |= set(util.get_consuming_ops(t))
+        frontier_ops -= self.grad_ops
+        fw_reachable_ops = {op2
+                            for op1 in frontier_ops
+                            for op2 in set(ge.get_forward_walk_ops(op1))}
+
+        bw_reachable_ops = set(ge.get_forward_walk_ops(bw_op, inclusive=False))
+        common_ops = fw_reachable_ops & bw_reachable_ops
+        min_order = self.topo_sort.size + 1
+        nco_op = None
+        for op in common_ops:
+            order = self.topo_sort.get_order(op)
+            if order < 0:
+                continue
+            if order < min_order:
+                min_order = order
+                nco_op = op
+        return nco_op
+        
+    def do_direct_order(self, fw_op, src_op, lower_b, upper_b):
         '''Find a control dependency operation using topological sort
         '''
         if lower_b == 0:
@@ -137,14 +173,18 @@ class LMS(object):
         # offset ordering
         fw_order = self.topo_sort.get_order(fw_op)
         src_order = self.topo_sort.get_order(src_op)
+
         if src_order < 0:
-            # try again
-            return self.find_ctrld_ops_1(fw_op, src_op, lower_b, upper_b)
+            nco_op = self.find_nco(fw_op, src_op)
+            if nco_op:
+                src_op = nco_op
+                src_order = self.topo_sort.get_order(src_op)
+            else:
+                # try again
+                return self.do_down_and_get(fw_op, src_op, lower_b, upper_b)
+
         range_ub = src_order - lower_b
         range_lb = max([src_order - upper_b, fw_order]) + 1
-
-        self.log_info("Finding ctrld_op for {}, order {}, in range: [{}-{}]".format(
-            src_op.name, src_order, range_lb, range_ub - 1), 1)
 
         # common ops
         common_ops = set(ge.get_forward_walk_ops(fw_op)) | set(ge.get_backward_walk_ops(src_op))
@@ -413,8 +453,13 @@ class LMS(object):
                 return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
 
     def add_ctrld(self, fw_op, bw_op, swapin_op, lb, ub):
-        re = self.find_ctrld_ops_1(fw_op, bw_op, lb, ub)
-        # re = self.find_ctrld_ops(fw_op, bw_op, lb, ub)
+        if self.ctrld_strategy is CTRLD_Strategy.DOWN_AND_GET:
+            re = self.do_down_and_get(fw_op, bw_op, lb, ub)
+        elif self.ctrld_strategy is CTRLD_Strategy.DIRECT_ORDER:
+            re = self.do_direct_order(fw_op, bw_op, lb, ub)
+        else:
+            re = self.do_down_and_get(fw_op, bw_op, lb, ub)
+
         if re[0]:
             ge.add_control_inputs(swapin_op, re[0])
             self.log_info(
