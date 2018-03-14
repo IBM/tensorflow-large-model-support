@@ -194,29 +194,40 @@ class LMS(object):
                 nco_op = op
         return nco_op
         
-    def find_inscope(self, bw_op):
-        current_scope = bw_op.name
+    def find_inscope(self, scope):
+        current_scope = scope
         higher_scope = current_scope.rsplit('/', 1)[0]
-        ops = set(ge.filter_ops_from_regex(
-            ge.make_list_of_op(self.graph),
-            "^{}".format(higher_scope)))
-        ops.remove(bw_op)
-
-        # gradient ops only
-        ops &= self.grad_ops
         
-        # ops in chain rule
-        ops = {op for op in ops if self.topo_sort.get_order(op) > 0}
+        visited_ops = set()
+        while (current_scope != higher_scope):
+            ops = set(ge.filter_ops_from_regex(
+                ge.make_list_of_op(self.graph),
+                "^{}".format(higher_scope)))
+            
+            # not consider inner ops
+            ops1 = ops - visited_ops
 
-        # get the earliest op
-        min_order = self.topo_sort.size + 1
-        earliest_op = None
-        for op in ops:
-            order = self.topo_sort.get_order(op)
-            if order < min_order:
-                min_order = order
-                earliest_op = op
-        return earliest_op
+            # gradient ops only
+            ops1 &= self.grad_ops
+        
+            # ops in chain rule
+            ops1 = {op for op in ops1 if self.topo_sort.get_order(op) > 0}
+
+            # get the earliest op
+            min_order = self.topo_sort.size + 1
+            earliest_op = None
+            for op in ops1:
+                order = self.topo_sort.get_order(op)
+                if order < min_order:
+                    min_order = order
+                    earliest_op = op
+            if not earliest_op:
+                # go outside
+                visited_ops |= ops
+                current_scope = higher_scope
+                higher_scope = current_scope.rsplit('/', 1)[0]
+            else:
+                return earliest_op
 
     def run(self):
         self.log_info("Editing model for LMS")
@@ -474,7 +485,7 @@ class LMS(object):
             if nco:
                 bw_op = nco
             else:
-                in_scope_ops = self.find_inscope(bw_op)
+                in_scope_ops = self.find_inscope(bw_op.name)
                 if in_scope_ops:
                     bw_op = in_scope_ops
                 else:
