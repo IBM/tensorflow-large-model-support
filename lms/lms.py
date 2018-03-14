@@ -78,6 +78,11 @@ class LMS(object):
         fw_order = self.topo_sort.get_order(fw_op)
         bw_order = self.topo_sort.get_order(bw_op)
 
+        # check if the bw op is near the boundary between fw and bw phases
+        testing_op = next(iter(self.topo_sort.get_ops(bw_order - 1)))
+        if testing_op not in self.grad_ops:
+            return self.do_direct_order(fw_op, bw_op, lower_b, upper_b)
+
         open_set1 = Queue.Queue()
         open_set2 = Queue.Queue()
         closed_set = set()
@@ -103,10 +108,14 @@ class LMS(object):
                 consumming_ops_bw = total_consumming_ops & self.grad_ops
                 if len(consumming_ops_bw) > 0:
                     result_ops |= consumming_ops_bw
+                    # check validation
                     result_ops = {op
                                   for op in result_ops 
                                   if self.topo_sort.get_order(op) > fw_order}
-
+                    result_ops = {
+                        op 
+                        for op in result_ops
+                        if self.topo_sort.get_order(op) < bw_order}
             # go to the next level
             next_ops = total_consumming_ops - self.grad_ops
             for op in next_ops:
@@ -118,25 +127,48 @@ class LMS(object):
             closed_set.add(src_op)
             if open_set1.empty():
                 if result_ops:
-                    if bw_op in result_ops:
-                        result_ops = set()
-                    else:
-                        break
+                    break
                 lower_b = lower_b - 1
                 upper_b = upper_b - 1
                 while not open_set2.empty():
                     open_set1.put(open_set2.get())
         if result_ops:
-            if bw_order >= 0:
-                for op in result_ops:
-                    order = self.topo_sort.get_order(op)
-                    if bw_order > order:  # valid dependency
-                        return (op, order)
-            else:
-                ctrld_op = next(iter(result_ops))
-                return (ctrld_op, self.topo_sort.get_order(ctrld_op))
+            ctrld_op = next(iter(result_ops))
+            return (ctrld_op, self.topo_sort.get_order(ctrld_op))
+        else:
+            return (None, -1)
 
-        return (None, -1)
+    def do_direct_order(self, fw_op, src_op, lower_b, upper_b):
+        '''Find a control dependency operation using topological sort
+        '''
+        if lower_b == 0:
+            return (None, -1)
+
+        result_ops = set()
+
+        # offset ordering
+        fw_order = self.topo_sort.get_order(fw_op)
+        src_order = self.topo_sort.get_order(src_op)
+
+        range_ub = src_order - lower_b
+        range_lb = max([src_order - upper_b, fw_order]) + 1
+
+        # common ops
+        common_ops = set(ge.get_forward_walk_ops(fw_op)) | set(ge.get_backward_walk_ops(src_op))
+        ctrld_order = -1
+        for i in reversed(range(range_lb, range_ub)):
+            candidates = self.topo_sort.get_ops(i)
+            candidates &= common_ops
+            if candidates:
+                result_ops |= candidates
+                ctrld_order = i
+                break
+
+        if result_ops:
+            ctrld_op = next(iter(result_ops))
+            return (ctrld_op, ctrld_order)
+        else:
+            return (None, -1)
 
     def find_nco(self, fw_op, bw_op):
         '''Find the nearest common ops in reachable ops of two given ops
@@ -162,46 +194,29 @@ class LMS(object):
                 nco_op = op
         return nco_op
         
-    def do_direct_order(self, fw_op, src_op, lower_b, upper_b):
-        '''Find a control dependency operation using topological sort
-        '''
-        if lower_b == 0:
-            return (None, -1)
+    def find_inscope(self, bw_op):
+        current_scope = bw_op.name
+        higher_scope = current_scope.rsplit('/', 1)[0]
+        ops = set(ge.filter_ops_from_regex(
+            ge.make_list_of_op(self.graph),
+            "^{}".format(higher_scope)))
+        ops.remove(bw_op)
 
-        result_ops = set()
+        # gradient ops only
+        ops &= self.grad_ops
+        
+        # ops in chain rule
+        ops = {op for op in ops if self.topo_sort.get_order(op) > 0}
 
-        # offset ordering
-        fw_order = self.topo_sort.get_order(fw_op)
-        src_order = self.topo_sort.get_order(src_op)
-
-        if src_order < 0:
-            nco_op = self.find_nco(fw_op, src_op)
-            if nco_op:
-                src_op = nco_op
-                src_order = self.topo_sort.get_order(src_op)
-            else:
-                # try again
-                return self.do_down_and_get(fw_op, src_op, lower_b, upper_b)
-
-        range_ub = src_order - lower_b
-        range_lb = max([src_order - upper_b, fw_order]) + 1
-
-        # common ops
-        common_ops = set(ge.get_forward_walk_ops(fw_op)) | set(ge.get_backward_walk_ops(src_op))
-        ctrld_order = -1
-        for i in reversed(range(range_lb, range_ub)):
-            candidates = self.topo_sort.get_ops(i)
-            candidates &= common_ops
-            if candidates:
-                result_ops |= candidates
-                ctrld_order = i
-                break
-
-        if result_ops:
-            ctrld_op = next(iter(result_ops))
-            return (ctrld_op, ctrld_order)
-        else:
-            return (None, -1)
+        # get the earliest op
+        min_order = self.topo_sort.size + 1
+        earliest_op = None
+        for op in ops:
+            order = self.topo_sort.get_order(op)
+            if order < min_order:
+                min_order = order
+                earliest_op = op
+        return earliest_op
 
     def run(self):
         self.log_info("Editing model for LMS")
@@ -290,6 +305,14 @@ class LMS(object):
             closed_set.add(src_op)
 
     def insert_swnodes(self, src_op):
+        if self.n_tensors > 0:
+            if self.ingpu_count > 0:
+                if (self.ingpu_count + self.incpu_count) >= self.n_tensors:
+                    return  # swap enough
+            else:
+                if (self.incpu_count) >= self.n_tensors:
+                    return
+
         self.log_info("Operation: {}".format(src_op), 2)
 
         # bypass exclusive ops
@@ -297,14 +320,6 @@ class LMS(object):
             return
 
         for t in src_op.outputs:
-            if self.n_tensors > 0:
-                if self.ingpu_count > 0:
-                    if (self.ingpu_count + self.incpu_count) >= self.n_tensors:
-                        return  # swap enough
-                else:
-                    if (self.incpu_count) >= self.n_tensors:
-                        return
-
             frontier_ops = set(util.get_consuming_ops(t))
             self.log_info("my frontier ops: {}".format(frontier_ops), 2)
 
@@ -415,6 +430,7 @@ class LMS(object):
                     connect_sgv(swap_in_sgv, dest_sgv,
                                 remap_inputs=True, idx=input_idx)
                     self.excl_ops.add(swap_in.op)
+
                     self.log_info("Consuming op {} (order {}) swaps in {}".format(
                         dest_op.name, self.topo_sort.get_order(dest_op),
                         ts[0].name), 1)
@@ -453,6 +469,18 @@ class LMS(object):
                 return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
 
     def add_ctrld(self, fw_op, bw_op, swapin_op, lb, ub):
+        if self.topo_sort.get_order(bw_op) < 0:
+            nco = self.find_nco(fw_op, bw_op)
+            if nco:
+                bw_op = nco
+            else:
+                in_scope_ops = self.find_inscope(bw_op)
+                if in_scope_ops:
+                    bw_op = in_scope_ops
+                else:
+                    self.log_info("No control dependency op", 1)
+                    return
+
         if self.ctrld_strategy is CTRLD_Strategy.DOWN_AND_GET:
             re = self.do_down_and_get(fw_op, bw_op, lb, ub)
         elif self.ctrld_strategy is CTRLD_Strategy.DIRECT_ORDER:
@@ -465,6 +493,8 @@ class LMS(object):
             self.log_info(
                 "Control dependency op {},  order: {}".format(
                     re[0].name, re[1]), 1)
+        else:
+            self.log_info("No control dependency op", 1)
 
     def log_info(self, message, level=0):
         if level == 0 or (self.debug and self.debug_level >= level):
