@@ -231,6 +231,7 @@ class LMS(object):
 
     def run(self):
         self.log_info("Editing model for LMS")
+        self.print_configuration()
         start_time = time.time()
 
         seed_ops = ge.filter_ops_from_regex(
@@ -516,6 +517,13 @@ class LMS(object):
             # Use tf.logging.info instead of print, since print
             # is not thread safe, which can break tests.
             tf.logging.info("[LMS][{}] {}".format(level, message))
+
+    def print_configuration(self):
+        if self.n_tensors == 0:
+            self.log_info("n_tensors: all tensors")
+        else:
+            self.log_info("n_tensors: {}".format(self.n_tensors))
+        self.log_info("lb: {}".format(self.lb))
 
 
 def connect_sgv(src_sgv, dest_sgv,
