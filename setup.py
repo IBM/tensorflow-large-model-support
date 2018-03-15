@@ -8,7 +8,7 @@ install_requires = [
 
 setup(
     name='tflms',
-    version='0.2.0b1',
+    version='0.2.0b2',
     description='tflms: graph editing library for large model support',
     author='Tung D. Le',
     author_email='tung@jp.ibm.com',
