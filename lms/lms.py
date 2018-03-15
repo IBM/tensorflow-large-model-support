@@ -12,7 +12,7 @@ class CTRLD_Strategy(Enum):
     DIRECT_ORDER = auto()
 
 class LMS(object):
-    def __init__(self, graph, optimizer_scope=None, excl_scopes=set(),
+    def __init__(self, graph, optimizer_scope=set(), excl_scopes=set(),
                  starting_scope=None,
                  lb=1, ub=10000,
                  n_tensors=0,
@@ -242,9 +242,10 @@ class LMS(object):
             reachable_ops |= set(ge.get_forward_walk_ops(seed_op))
 
         # gradient ops
-        self.grad_ops = set(ge.filter_ops_from_regex(
-            ge.make_list_of_op(self.graph), "^{}".format(
-                self.optimizer_scope)))
+        for scope in self.optimizer_scope:
+            self.grad_ops.update(
+                set(ge.filter_ops_from_regex(
+                    ge.make_list_of_op(self.graph), "^{}".format(scope))))
 
         self.fw_reachable_ops = reachable_ops - self.grad_ops
 
