@@ -5,7 +5,11 @@ from tensorflow.contrib.graph_editor import util
 import time
 import queue as Queue
 import lms.topos as topos
+from enum import Enum, auto
 
+class CTRLD_Strategy(Enum):
+    CHAIN_RULE = auto()
+    DIRECT_ORDER = auto()
 
 class LMS(object):
     def __init__(self, graph, optimizer_scope=set(), excl_scopes=set(),
@@ -17,13 +21,14 @@ class LMS(object):
                  ssg_id="1",
                  ssg_as_buffer=False,
                  fuse_swapins=False,
+                 ctrld_strategy="chain_rule",
                  debug=False,
                  debug_level=1):
         if optimizer_scope is None:
             print("set the optimizer scope")
             return
         if starting_scope is None:
-            print("set the first layer name")
+            print("set the starting scope")
             return
 
         self.graph = graph
@@ -34,6 +39,13 @@ class LMS(object):
         self.ub = ub  # upperbound
         self.n_tensors = n_tensors
         self.fuse_swapins = fuse_swapins
+        if ctrld_strategy == "chain_rule":
+            self.ctrld_strategy = CTRLD_Strategy.CHAIN_RULE
+        elif ctrld_strategy == "direct_order":
+            self.ctrld_strategy = CTRLD_Strategy.DIRECT_ORDER
+        else:
+            self.log_info("Invalid value for ctrld_strategy.")
+            return
 
         # Operations with these types will be ignored
         self.atomic_types = ['Const', 'Mul', 'Add',
@@ -56,7 +68,7 @@ class LMS(object):
         # for roundrobin scheduling
         self.currentSSG = False
 
-    def find_ctrld_ops_1(self, fw_op, bw_op, lower_b, upper_b):  # BFS
+    def do_chain_rule(self, fw_op, bw_op, lower_b, upper_b):  # BFS
         '''Find a control dependency operation using chain rules.
         Go down along the forward phase to find corresponding bw ops
         '''
@@ -65,6 +77,11 @@ class LMS(object):
 
         fw_order = self.topo_sort.get_order(fw_op)
         bw_order = self.topo_sort.get_order(bw_op)
+
+        # check if the bw op is near the boundary between fw and bw phases
+        testing_op = next(iter(self.topo_sort.get_ops(bw_order - 1)))
+        if testing_op not in self.grad_ops:
+            return self.do_direct_order(fw_op, bw_op, lower_b, upper_b)
 
         open_set1 = Queue.Queue()
         open_set2 = Queue.Queue()
@@ -91,10 +108,14 @@ class LMS(object):
                 consumming_ops_bw = total_consumming_ops & self.grad_ops
                 if len(consumming_ops_bw) > 0:
                     result_ops |= consumming_ops_bw
+                    # check validation
                     result_ops = {op
                                   for op in result_ops 
                                   if self.topo_sort.get_order(op) > fw_order}
-
+                    result_ops = {
+                        op 
+                        for op in result_ops
+                        if self.topo_sort.get_order(op) < bw_order}
             # go to the next level
             next_ops = total_consumming_ops - self.grad_ops
             for op in next_ops:
@@ -106,27 +127,18 @@ class LMS(object):
             closed_set.add(src_op)
             if open_set1.empty():
                 if result_ops:
-                    if bw_op in result_ops:
-                        result_ops = set()
-                    else:
-                        break
+                    break
                 lower_b = lower_b - 1
                 upper_b = upper_b - 1
                 while not open_set2.empty():
                     open_set1.put(open_set2.get())
         if result_ops:
-            if bw_order >= 0:
-                for op in result_ops:
-                    order = self.topo_sort.get_order(op)
-                    if bw_order > order:  # valid dependency
-                        return (op, order)
-            else:
-                ctrld_op = next(iter(result_ops))
-                return (ctrld_op, self.topo_sort.get_order(ctrld_op))
+            ctrld_op = next(iter(result_ops))
+            return (ctrld_op, self.topo_sort.get_order(ctrld_op))
+        else:
+            return (None, -1)
 
-        return (None, -1)
-
-    def find_ctrld_ops(self, fw_op, src_op, lower_b, upper_b):
+    def do_direct_order(self, fw_op, src_op, lower_b, upper_b):
         '''Find a control dependency operation using topological sort
         '''
         if lower_b == 0:
@@ -137,14 +149,9 @@ class LMS(object):
         # offset ordering
         fw_order = self.topo_sort.get_order(fw_op)
         src_order = self.topo_sort.get_order(src_op)
-        if src_order < 0:
-            # try again
-            return self.find_ctrld_ops_1(fw_op, src_op, lower_b, upper_b)
+
         range_ub = src_order - lower_b
         range_lb = max([src_order - upper_b, fw_order]) + 1
-
-        self.log_info("Finding ctrld_op for {}, order {}, in range: [{}-{}]".format(
-            src_op.name, src_order, range_lb, range_ub - 1), 1)
 
         # common ops
         common_ops = set(ge.get_forward_walk_ops(fw_op)) | set(ge.get_backward_walk_ops(src_op))
@@ -163,8 +170,68 @@ class LMS(object):
         else:
             return (None, -1)
 
+    def find_nco(self, fw_op, bw_op):
+        '''Find the nearest common ops in reachable ops of two given ops
+        '''
+        frontier_ops = set()
+        for t in fw_op.outputs:
+            frontier_ops |= set(util.get_consuming_ops(t))
+        frontier_ops -= self.grad_ops
+        fw_reachable_ops = {op2
+                            for op1 in frontier_ops
+                            for op2 in set(ge.get_forward_walk_ops(op1))}
+
+        bw_reachable_ops = set(ge.get_forward_walk_ops(bw_op, inclusive=False))
+        common_ops = fw_reachable_ops & bw_reachable_ops
+        min_order = self.topo_sort.size + 1
+        nco_op = None
+        for op in common_ops:
+            order = self.topo_sort.get_order(op)
+            if order < 0:
+                continue
+            if order < min_order:
+                min_order = order
+                nco_op = op
+        return nco_op
+        
+    def find_inscope(self, scope):
+        current_scope = scope
+        higher_scope = current_scope.rsplit('/', 1)[0]
+        
+        visited_ops = set()
+        while (current_scope != higher_scope):
+            ops = set(ge.filter_ops_from_regex(
+                ge.make_list_of_op(self.graph),
+                "^{}".format(higher_scope)))
+            
+            # not consider inner ops
+            ops1 = ops - visited_ops
+
+            # gradient ops only
+            ops1 &= self.grad_ops
+        
+            # ops in chain rule
+            ops1 = {op for op in ops1 if self.topo_sort.get_order(op) > 0}
+
+            # get the earliest op
+            min_order = self.topo_sort.size + 1
+            earliest_op = None
+            for op in ops1:
+                order = self.topo_sort.get_order(op)
+                if order < min_order:
+                    min_order = order
+                    earliest_op = op
+            if not earliest_op:
+                # go outside
+                visited_ops |= ops
+                current_scope = higher_scope
+                higher_scope = current_scope.rsplit('/', 1)[0]
+            else:
+                return earliest_op
+
     def run(self):
         self.log_info("Editing model for LMS")
+        self.print_configuration()
         start_time = time.time()
 
         seed_ops = ge.filter_ops_from_regex(
@@ -289,6 +356,7 @@ class LMS(object):
                     ts = ge.filter_ts_from_regex(sample_op, src_op.name)
                     ts0 = ts[0]
 
+                    # TODO: put this op into the same scope as src_op
                     swap_out = tf.identity(
                         ts0,
                         name='swap_out_' + src_op.name.replace('/', '_'))
@@ -322,6 +390,7 @@ class LMS(object):
                         if self.topo_sort.get_order(op) > 0}
                     if fuse_bw_frontier_ops:
                         dev = "/cpu:0" if self.ssg_as_buffer else self.get_ext_device()
+                        # TODO: put this op into the same scope as dest_op
                         with tf.device(dev):
                             swap_in = tf.identity(
                                 ts0,
@@ -341,8 +410,8 @@ class LMS(object):
                             connect_sgv(swap_in_sgv, op_sgv,
                                         remap_inputs=True, idx=input_idx)
 
-                            self.log_info("{} reuses tensor {}".format(
-                                op.name, ts[0].name), 1)
+                            self.log_info("{} (order {}) reuses tensor {}".format(
+                                self.topo_sort.get_order(op), op.name, ts[0].name), 1)
 
                         # control dependency -> swap_in
                         min_order = self.topo_sort.size + 1
@@ -376,6 +445,7 @@ class LMS(object):
                     connect_sgv(swap_in_sgv, dest_sgv,
                                 remap_inputs=True, idx=input_idx)
                     self.excl_ops.add(swap_in.op)
+
                     self.log_info("Consuming op {} (order {}) swaps in {}".format(
                         dest_op.name, self.topo_sort.get_order(dest_op),
                         ts[0].name), 1)
@@ -414,19 +484,47 @@ class LMS(object):
                 return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
 
     def add_ctrld(self, fw_op, bw_op, swapin_op, lb, ub):
-        re = self.find_ctrld_ops_1(fw_op, bw_op, lb, ub)
-        # re = self.find_ctrld_ops(fw_op, bw_op, lb, ub)
-        if re[0]:
-            ge.add_control_inputs(swapin_op, re[0])
+        if self.topo_sort.get_order(bw_op) < 0:
+            nco = self.find_nco(fw_op, bw_op)
+            if nco:
+                bw_op = nco
+            else:
+                in_scope_ops = self.find_inscope(bw_op.name)
+                if in_scope_ops:
+                    bw_op = in_scope_ops
+                else:
+                    self.log_info("No control dependency op", 1)
+                    return
+
+        if self.ctrld_strategy is CTRLD_Strategy.CHAIN_RULE:
+            re = self.do_chain_rule(fw_op, bw_op, lb, ub)
+        elif self.ctrld_strategy is CTRLD_Strategy.DIRECT_ORDER:
+            re = self.do_direct_order(fw_op, bw_op, lb, ub)
+        else:
+            re = self.do_chain_rule(fw_op, bw_op, lb, ub)
+
+        ctrld_op = re[0]
+        ctrld_order = re[1]
+        if ctrld_op:
+            ge.add_control_inputs(swapin_op, ctrld_op)
             self.log_info(
                 "Control dependency op {},  order: {}".format(
-                    re[0].name, re[1]), 1)
+                    ctrld_op.name, ctrld_order), 1)
+        else:
+            self.log_info("No control dependency op", 1)
 
     def log_info(self, message, level=0):
         if level == 0 or (self.debug and self.debug_level >= level):
             # Use tf.logging.info instead of print, since print
             # is not thread safe, which can break tests.
             tf.logging.info("[LMS][{}] {}".format(level, message))
+
+    def print_configuration(self):
+        if self.n_tensors == 0:
+            self.log_info("n_tensors: all tensors")
+        else:
+            self.log_info("n_tensors: {}".format(self.n_tensors))
+        self.log_info("lb: {}".format(self.lb))
 
 
 def connect_sgv(src_sgv, dest_sgv,
