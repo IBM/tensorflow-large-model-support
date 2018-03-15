@@ -8,7 +8,7 @@ import lms.topos as topos
 from enum import Enum, auto
 
 class CTRLD_Strategy(Enum):
-    DOWN_AND_GET = auto()
+    CHAIN_RULE = auto()
     DIRECT_ORDER = auto()
 
 class LMS(object):
@@ -21,7 +21,7 @@ class LMS(object):
                  ssg_id="1",
                  ssg_as_buffer=False,
                  fuse_swapins=False,
-                 ctrld_strategy="down_and_get",
+                 ctrld_strategy="chain_rule",
                  debug=False,
                  debug_level=1):
         if optimizer_scope is None:
@@ -39,8 +39,8 @@ class LMS(object):
         self.ub = ub  # upperbound
         self.n_tensors = n_tensors
         self.fuse_swapins = fuse_swapins
-        if ctrld_strategy == "down_and_get":
-            self.ctrld_strategy = CTRLD_Strategy.DOWN_AND_GET
+        if ctrld_strategy == "chain_rule":
+            self.ctrld_strategy = CTRLD_Strategy.CHAIN_RULE
         elif ctrld_strategy == "direct_order":
             self.ctrld_strategy = CTRLD_Strategy.DIRECT_ORDER
         else:
@@ -68,7 +68,7 @@ class LMS(object):
         # for roundrobin scheduling
         self.currentSSG = False
 
-    def do_down_and_get(self, fw_op, bw_op, lower_b, upper_b):  # BFS
+    def do_chain_rule(self, fw_op, bw_op, lower_b, upper_b):  # BFS
         '''Find a control dependency operation using chain rules.
         Go down along the forward phase to find corresponding bw ops
         '''
@@ -494,12 +494,12 @@ class LMS(object):
                     self.log_info("No control dependency op", 1)
                     return
 
-        if self.ctrld_strategy is CTRLD_Strategy.DOWN_AND_GET:
-            re = self.do_down_and_get(fw_op, bw_op, lb, ub)
+        if self.ctrld_strategy is CTRLD_Strategy.CHAIN_RULE:
+            re = self.do_chain_rule(fw_op, bw_op, lb, ub)
         elif self.ctrld_strategy is CTRLD_Strategy.DIRECT_ORDER:
             re = self.do_direct_order(fw_op, bw_op, lb, ub)
         else:
-            re = self.do_down_and_get(fw_op, bw_op, lb, ub)
+            re = self.do_chain_rule(fw_op, bw_op, lb, ub)
 
         ctrld_op = re[0]
         ctrld_order = re[1]
