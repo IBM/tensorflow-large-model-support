@@ -45,11 +45,14 @@ class TOPOS(object):
         return dep_dict
 
     def clean_bw_ops(self):
+        '''There are some bw ops that 
+             - have no incoming bw ops except its fw op, or
+             - have no outgoing ops.
+        Execution order of these ops may depend on Tensorflow runtime.
+        '''
+
         for i in range(0, len(self.topo_sort)):
             dep_ops = self.topo_sort[i]
-
-            # There are ops that is a bw ops but there is no incoming ops that are bw ops.
-            # Execution order of these ops may depend on Tensorflow runtime.
             fw_dep_ops = dep_ops - self.grad_ops
             bw_dep_ops = dep_ops & self.grad_ops
             if fw_dep_ops:
@@ -57,11 +60,21 @@ class TOPOS(object):
             else:
                 self.topo_sort[i] = dep_ops
 
-    def clean_nonbw_ops(self):
-        for i in range(self.bw_starting_order_, len(self.topo_sort)):
+    def clean_update_ops(self):
+        '''Remove ops that are in the update phase
+        '''
+        for i in range(0, len(self.topo_sort)):
             ops = self.topo_sort[i]
-            self.topo_sort[i] = ops & self.grad_ops
-        # reindexing
+            # remove ops that are not bw or fw op
+            # e.g ops in the update phase
+            ops = {op for op in ops
+                   if (set(ge.get_forward_walk_ops(op))
+                       & self.grad_ops)}
+            self.topo_sort[i] = ops
+
+    def reindex(self):
+        ''' Remove orders with empty set and reindex
+        '''
         topo_sort = {}
         index = 0
         for i in range(0, len(self.topo_sort)):
@@ -88,7 +101,8 @@ class TOPOS(object):
 
         # if there are non-bw ops in the bw phase,
         # then remove them, and do reordering
-        self.clean_nonbw_ops()
+        self.clean_update_ops()
+        self.reindex()
 
     def get_order(self, op):
         result = -1
