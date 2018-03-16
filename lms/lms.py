@@ -7,15 +7,17 @@ import queue as Queue
 import lms.topos as topos
 from enum import Enum, auto
 
+
 class CTRLD_Strategy(Enum):
     CHAIN_RULE = auto()
     DIRECT_ORDER = auto()
+
 
 class LMS(object):
     def __init__(self, graph, optimizer_scope=set(), excl_scopes=set(),
                  starting_scope=None,
                  lb=1, ub=10000,
-                 n_tensors=0,
+                 n_tensors=-1,
                  n_cpu_threads=1,  # experimental feature
                  ssg_n_tensors=0,  # the number of tensors for second storage
                  ssg_id="1",
@@ -230,6 +232,12 @@ class LMS(object):
                 return earliest_op
 
     def run(self):
+        if self.n_tensors == 0:
+            self.log_info("Not modify model for LMS")
+            return  # turn off LMS
+        elif self.n_tensors < 0:
+            self.n_tensors = 0  # swap all tensors (default)
+
         self.log_info("Editing model for LMS")
         self.print_configuration()
         start_time = time.time()
