@@ -429,8 +429,7 @@ class LMS(object):
         bw_order = self.topo_sort.get_order(bw_op)
 
         # check if the bw op is near the boundary between fw and bw phases
-        testing_op = next(iter(self.topo_sort.get_ops(bw_order - 1)))
-        if testing_op not in self.grad_ops:
+        if (bw_order - lower_b) < self.topo_sort.bw_starting_order:
             return self.do_direct_order(fw_op, bw_op, lower_b, upper_b)
 
         open_set1 = Queue.Queue()
