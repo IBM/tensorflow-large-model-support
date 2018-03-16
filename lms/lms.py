@@ -46,8 +46,7 @@ class LMS(object):
         elif ctrld_strategy == "direct_order":
             self.ctrld_strategy = CTRLD_Strategy.DIRECT_ORDER
         else:
-            self.log_info("Invalid value for ctrld_strategy.")
-            return
+            self.ctrld_strategy = "chain_rule"
 
         # Operations with these types will be ignored
         self.atomic_types = ['Const', 'Mul', 'Add',
@@ -156,7 +155,7 @@ class LMS(object):
         range_lb = max([src_order - upper_b, fw_order]) + 1
 
         # common ops
-        common_ops = set(ge.get_forward_walk_ops(fw_op)) | set(ge.get_backward_walk_ops(src_op))
+        common_ops = set(ge.get_forward_walk_ops(fw_op)) & set(ge.get_backward_walk_ops(src_op))
         ctrld_order = -1
         for i in reversed(range(range_lb, range_ub)):
             candidates = self.topo_sort.get_ops(i)
