@@ -22,16 +22,17 @@ class TOPOS(object):
         # then remove the bw op
         self.clean_bw_ops()
 
+        # if there are non-bw ops in the bw phase,
+        # then remove them, and do reordering
+        self.clean_update_ops()
+        self.reindex()
+
+        # starting order of the backward phase
         for i in range(0, len(self.topo_sort)):
             ops = self.topo_sort[i]
             if (ops & self.grad_ops):
                 self.bw_starting_order_ = i
                 break
-
-        # if there are non-bw ops in the bw phase,
-        # then remove them, and do reordering
-        self.clean_update_ops()
-        self.reindex()
 
     def build_dependency_dict(self):
         open_set = Queue.Queue()
