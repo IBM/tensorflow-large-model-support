@@ -69,167 +69,6 @@ class LMS(object):
         # for roundrobin scheduling
         self.currentSSG = False
 
-    def do_chain_rule(self, fw_op, bw_op, lower_b, upper_b):  # BFS
-        '''Find a control dependency operation using chain rules.
-        Go down along the forward phase to find corresponding bw ops
-        '''
-        if lower_b == 0:
-            return (None, -1)
-
-        fw_order = self.topo_sort.get_order(fw_op)
-        bw_order = self.topo_sort.get_order(bw_op)
-
-        # check if the bw op is near the boundary between fw and bw phases
-        testing_op = next(iter(self.topo_sort.get_ops(bw_order - 1)))
-        if testing_op not in self.grad_ops:
-            return self.do_direct_order(fw_op, bw_op, lower_b, upper_b)
-
-        open_set1 = Queue.Queue()
-        open_set2 = Queue.Queue()
-        closed_set = set()
-
-        open_set1.put(fw_op)
-
-        result_ops = set()
-        while not open_set1.empty():
-            # stop if reaching the upperbound
-            if upper_b == 0 or (lower_b > upper_b):
-                break
-
-            src_op = open_set1.get()
-
-            # do action for src_op
-            total_consumming_ops = set()
-            for t in src_op.outputs:
-                consumming_ops = set(util.get_consuming_ops(t))
-                total_consumming_ops |= consumming_ops
-
-            if lower_b <= 0:
-                # inside the range
-                consumming_ops_bw = total_consumming_ops & self.grad_ops
-                if len(consumming_ops_bw) > 0:
-                    result_ops |= consumming_ops_bw
-                    # check validation
-                    result_ops = {op
-                                  for op in result_ops 
-                                  if self.topo_sort.get_order(op) > fw_order}
-                    result_ops = {
-                        op 
-                        for op in result_ops
-                        if self.topo_sort.get_order(op) < bw_order}
-            # go to the next level
-            next_ops = total_consumming_ops - self.grad_ops
-            for op in next_ops:
-                if op in closed_set:
-                    continue
-                if op not in open_set2.queue:
-                    open_set2.put(op)
-
-            closed_set.add(src_op)
-            if open_set1.empty():
-                if result_ops:
-                    break
-                lower_b = lower_b - 1
-                upper_b = upper_b - 1
-                while not open_set2.empty():
-                    open_set1.put(open_set2.get())
-        if result_ops:
-            ctrld_op = next(iter(result_ops))
-            return (ctrld_op, self.topo_sort.get_order(ctrld_op))
-        else:
-            return (None, -1)
-
-    def do_direct_order(self, fw_op, src_op, lower_b, upper_b):
-        '''Find a control dependency operation using topological sort
-        '''
-        if lower_b == 0:
-            return (None, -1)
-
-        result_ops = set()
-
-        # offset ordering
-        fw_order = self.topo_sort.get_order(fw_op)
-        src_order = self.topo_sort.get_order(src_op)
-
-        range_ub = src_order - lower_b
-        range_lb = max([src_order - upper_b, fw_order]) + 1
-
-        # common ops
-        common_ops = set(ge.get_forward_walk_ops(fw_op)) & set(ge.get_backward_walk_ops(src_op))
-        ctrld_order = -1
-        for i in reversed(range(range_lb, range_ub)):
-            candidates = self.topo_sort.get_ops(i)
-            candidates &= common_ops
-            if candidates:
-                result_ops |= candidates
-                ctrld_order = i
-                break
-
-        if result_ops:
-            ctrld_op = next(iter(result_ops))
-            return (ctrld_op, ctrld_order)
-        else:
-            return (None, -1)
-
-    def find_nco(self, fw_op, bw_op):
-        '''Find the nearest common ops in reachable ops of two given ops
-        '''
-        frontier_ops = set()
-        for t in fw_op.outputs:
-            frontier_ops |= set(util.get_consuming_ops(t))
-        frontier_ops -= self.grad_ops
-        fw_reachable_ops = {op2
-                            for op1 in frontier_ops
-                            for op2 in set(ge.get_forward_walk_ops(op1))}
-
-        bw_reachable_ops = set(ge.get_forward_walk_ops(bw_op, inclusive=False))
-        common_ops = fw_reachable_ops & bw_reachable_ops
-        min_order = self.topo_sort.size + 1
-        nco_op = None
-        for op in common_ops:
-            order = self.topo_sort.get_order(op)
-            if order < 0:
-                continue
-            if order < min_order:
-                min_order = order
-                nco_op = op
-        return nco_op
-        
-    def find_inscope(self, scope):
-        current_scope = scope
-        higher_scope = current_scope.rsplit('/', 1)[0]
-        
-        visited_ops = set()
-        while (current_scope != higher_scope):
-            ops = set(ge.filter_ops_from_regex(
-                ge.make_list_of_op(self.graph),
-                "^{}".format(higher_scope)))
-            
-            # not consider inner ops
-            ops1 = ops - visited_ops
-
-            # gradient ops only
-            ops1 &= self.grad_ops
-        
-            # ops in chain rule
-            ops1 = {op for op in ops1 if self.topo_sort.get_order(op) > 0}
-
-            # get the earliest op
-            min_order = self.topo_sort.size + 1
-            earliest_op = None
-            for op in ops1:
-                order = self.topo_sort.get_order(op)
-                if order < min_order:
-                    min_order = order
-                    earliest_op = op
-            if not earliest_op:
-                # go outside
-                visited_ops |= ops
-                current_scope = higher_scope
-                higher_scope = current_scope.rsplit('/', 1)[0]
-            else:
-                return earliest_op
-
     def run(self):
         if self.n_tensors == 0:
             self.log_info("Not modify model for LMS")
@@ -519,6 +358,167 @@ class LMS(object):
                     ctrld_op.name, ctrld_order), 1)
         else:
             self.log_info("No control dependency op", 1)
+
+    def find_nco(self, fw_op, bw_op):
+        '''Find the nearest common ops in reachable ops of two given ops
+        '''
+        frontier_ops = set()
+        for t in fw_op.outputs:
+            frontier_ops |= set(util.get_consuming_ops(t))
+        frontier_ops -= self.grad_ops
+        fw_reachable_ops = {op2
+                            for op1 in frontier_ops
+                            for op2 in set(ge.get_forward_walk_ops(op1))}
+
+        bw_reachable_ops = set(ge.get_forward_walk_ops(bw_op, inclusive=False))
+        common_ops = fw_reachable_ops & bw_reachable_ops
+        min_order = self.topo_sort.size + 1
+        nco_op = None
+        for op in common_ops:
+            order = self.topo_sort.get_order(op)
+            if order < 0:
+                continue
+            if order < min_order:
+                min_order = order
+                nco_op = op
+        return nco_op
+        
+    def find_inscope(self, scope):
+        current_scope = scope
+        higher_scope = current_scope.rsplit('/', 1)[0]
+        
+        visited_ops = set()
+        while (current_scope != higher_scope):
+            ops = set(ge.filter_ops_from_regex(
+                ge.make_list_of_op(self.graph),
+                "^{}".format(higher_scope)))
+            
+            # not consider inner ops
+            ops1 = ops - visited_ops
+
+            # gradient ops only
+            ops1 &= self.grad_ops
+        
+            # ops in chain rule
+            ops1 = {op for op in ops1 if self.topo_sort.get_order(op) > 0}
+
+            # get the earliest op
+            min_order = self.topo_sort.size + 1
+            earliest_op = None
+            for op in ops1:
+                order = self.topo_sort.get_order(op)
+                if order < min_order:
+                    min_order = order
+                    earliest_op = op
+            if not earliest_op:
+                # go outside
+                visited_ops |= ops
+                current_scope = higher_scope
+                higher_scope = current_scope.rsplit('/', 1)[0]
+            else:
+                return earliest_op
+
+    def do_chain_rule(self, fw_op, bw_op, lower_b, upper_b):  # BFS
+        '''Find a control dependency operation using chain rules.
+        Go down along the forward phase to find corresponding bw ops
+        '''
+        if lower_b == 0:
+            return (None, -1)
+
+        fw_order = self.topo_sort.get_order(fw_op)
+        bw_order = self.topo_sort.get_order(bw_op)
+
+        # check if the bw op is near the boundary between fw and bw phases
+        testing_op = next(iter(self.topo_sort.get_ops(bw_order - 1)))
+        if testing_op not in self.grad_ops:
+            return self.do_direct_order(fw_op, bw_op, lower_b, upper_b)
+
+        open_set1 = Queue.Queue()
+        open_set2 = Queue.Queue()
+        closed_set = set()
+
+        open_set1.put(fw_op)
+
+        result_ops = set()
+        while not open_set1.empty():
+            # stop if reaching the upperbound
+            if upper_b == 0 or (lower_b > upper_b):
+                break
+
+            src_op = open_set1.get()
+
+            # do action for src_op
+            total_consumming_ops = set()
+            for t in src_op.outputs:
+                consumming_ops = set(util.get_consuming_ops(t))
+                total_consumming_ops |= consumming_ops
+
+            if lower_b <= 0:
+                # inside the range
+                consumming_ops_bw = total_consumming_ops & self.grad_ops
+                if len(consumming_ops_bw) > 0:
+                    result_ops |= consumming_ops_bw
+                    # check validation
+                    result_ops = {op
+                                  for op in result_ops 
+                                  if self.topo_sort.get_order(op) > fw_order}
+                    result_ops = {
+                        op 
+                        for op in result_ops
+                        if self.topo_sort.get_order(op) < bw_order}
+            # go to the next level
+            next_ops = total_consumming_ops - self.grad_ops
+            for op in next_ops:
+                if op in closed_set:
+                    continue
+                if op not in open_set2.queue:
+                    open_set2.put(op)
+
+            closed_set.add(src_op)
+            if open_set1.empty():
+                if result_ops:
+                    break
+                lower_b = lower_b - 1
+                upper_b = upper_b - 1
+                while not open_set2.empty():
+                    open_set1.put(open_set2.get())
+        if result_ops:
+            ctrld_op = next(iter(result_ops))
+            return (ctrld_op, self.topo_sort.get_order(ctrld_op))
+        else:
+            return (None, -1)
+
+    def do_direct_order(self, fw_op, src_op, lower_b, upper_b):
+        '''Find a control dependency operation using topological sort
+        '''
+        if lower_b == 0:
+            return (None, -1)
+
+        result_ops = set()
+
+        # offset ordering
+        fw_order = self.topo_sort.get_order(fw_op)
+        src_order = self.topo_sort.get_order(src_op)
+
+        range_ub = src_order - lower_b
+        range_lb = max([src_order - upper_b, fw_order]) + 1
+
+        # common ops
+        common_ops = set(ge.get_forward_walk_ops(fw_op)) & set(ge.get_backward_walk_ops(src_op))
+        ctrld_order = -1
+        for i in reversed(range(range_lb, range_ub)):
+            candidates = self.topo_sort.get_ops(i)
+            candidates &= common_ops
+            if candidates:
+                result_ops |= candidates
+                ctrld_order = i
+                break
+
+        if result_ops:
+            ctrld_op = next(iter(result_ops))
+            return (ctrld_op, ctrld_order)
+        else:
+            return (None, -1)
 
     def log_info(self, message, level=0):
         if level == 0 or (self.debug and self.debug_level >= level):

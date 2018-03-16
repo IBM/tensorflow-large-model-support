@@ -13,6 +13,26 @@ class TOPOS(object):
         self.topo_sort = {}
         self.bw_starting_order_ = -1
 
+    def build(self):
+        topo_sort = list(tps(self.build_dependency_dict()))
+        for i in range(0, len(topo_sort)):
+            self.topo_sort[i] = topo_sort[i]
+    
+        # if a bw op has the same order with a fw op,
+        # then remove the bw op
+        self.clean_bw_ops()
+
+        for i in range(0, len(self.topo_sort)):
+            ops = self.topo_sort[i]
+            if (ops & self.grad_ops):
+                self.bw_starting_order_ = i
+                break
+
+        # if there are non-bw ops in the bw phase,
+        # then remove them, and do reordering
+        self.clean_update_ops()
+        self.reindex()
+
     def build_dependency_dict(self):
         open_set = Queue.Queue()
         closed_set = set()
@@ -83,26 +103,6 @@ class TOPOS(object):
                 topo_sort[index] = ops
                 index += 1
         self.topo_sort = topo_sort
-
-    def build(self):
-        topo_sort = list(tps(self.build_dependency_dict()))
-        for i in range(0, len(topo_sort)):
-            self.topo_sort[i] = topo_sort[i]
-    
-        # if a bw op has the same order with a fw op,
-        # then remove the bw op
-        self.clean_bw_ops()
-
-        for i in range(0, len(self.topo_sort)):
-            ops = self.topo_sort[i]
-            if (ops & self.grad_ops):
-                self.bw_starting_order_ = i
-                break
-
-        # if there are non-bw ops in the bw phase,
-        # then remove them, and do reordering
-        self.clean_update_ops()
-        self.reindex()
 
     def get_order(self, op):
         result = -1
