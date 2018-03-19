@@ -336,9 +336,6 @@ class LMS(object):
                 return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
 
     def add_ctrld(self, fw_op, bw_op, swapin_op, lb, ub):
-        if lb == 0:
-            return (None, -1)
-
         if self.topo_sort.get_order(bw_op) < 0:
             nco = self.find_nco(fw_op, bw_op)
             if nco:
