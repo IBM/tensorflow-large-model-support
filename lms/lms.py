@@ -185,6 +185,12 @@ class LMS(object):
             bw_frontier_ops = frontier_ops & self.grad_ops
             self.log_info("my bw frontier ops: {}".format(bw_frontier_ops), 2)
 
+            # Not swap tensors used by bw ops without outgoing ops.
+            # These bw ops can be removed by Tensorflow compiler
+            bw_frontier_ops = {op
+                               for op in bw_frontier_ops
+                               if ge.get_forward_walk_ops(op, inclusive=False)}
+
             if not bw_frontier_ops:
                 continue
 
@@ -330,6 +336,9 @@ class LMS(object):
                 return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
 
     def add_ctrld(self, fw_op, bw_op, swapin_op, lb, ub):
+        if lb == 0:
+            return (None, -1)
+
         if self.topo_sort.get_order(bw_op) < 0:
             nco = self.find_nco(fw_op, bw_op)
             if nco:
@@ -422,9 +431,6 @@ class LMS(object):
         '''Find a control dependency operation using chain rules.
         Go down along the forward phase to find corresponding bw ops
         '''
-        if lower_b == 0:
-            return (None, -1)
-
         fw_order = self.topo_sort.get_order(fw_op)
         bw_order = self.topo_sort.get_order(bw_op)
 
@@ -490,9 +496,6 @@ class LMS(object):
     def do_direct_order(self, fw_op, src_op, lower_b, upper_b):
         '''Find a control dependency operation using topological sort
         '''
-        if lower_b == 0:
-            return (None, -1)
-
         result_ops = set()
 
         # offset ordering
