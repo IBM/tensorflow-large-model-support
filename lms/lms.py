@@ -202,27 +202,27 @@ class LMS(object):
                 self.log_info("Operation: {}, order {}".format(
                     src_op.name, self.topo_sort.get_order(src_op)), 1)
                 ts0 = None
-                with tf.device(self.get_ext_device(True)):
-                    src_sgv = ge.sgv(src_op, graph=self.graph)
-                    sample_op = next(iter(bw_frontier_ops))
-                    ts = ge.filter_ts_from_regex(sample_op, src_op.name)
-                    ts0 = ts[0]
+                src_sgv = ge.sgv(src_op, graph=self.graph)
+                sample_op = next(iter(bw_frontier_ops))
+                ts = ge.filter_ts_from_regex(sample_op, src_op.name)
+                ts0 = ts[0]
 
+                with tf.device(self.get_ext_device(True)):
                     # TODO: put this op into the same scope as src_op
                     swap_out = tf.identity(
                         ts0,
                         name='swap_out_' + src_op.name.replace('/', '_'))
-                    swap_out_sgv = ge.sgv(swap_out.op, graph=self.graph)
+                swap_out_sgv = ge.sgv(swap_out.op, graph=self.graph)
 
-                    # get output index
-                    src_out_idx = src_sgv.output_index(ts0)
+                # get output index
+                src_out_idx = src_sgv.output_index(ts0)
 
-                    # Connect: src-node -> swap-out
-                    connect_sgv(src_sgv, swap_out_sgv,
-                                remap_outputs=True, idx=src_out_idx)
-                    self.excl_ops.add(swap_out.op)
-                    self.log_info("Tensor {} will be placed on {}".format(
-                        ts0.name, self.get_ext_device()), 1)
+                # Connect: src-node -> swap-out
+                connect_sgv(src_sgv, swap_out_sgv,
+                            remap_outputs=True, idx=src_out_idx)
+                self.excl_ops.add(swap_out.op)
+                self.log_info("Tensor {} will be placed on {}".format(
+                    ts0.name, self.get_ext_device()), 1)
 
                 if self.ssg_as_buffer and ("GPU" in self.get_ext_device()):
                     with tf.device("/cpu:0"):
@@ -230,9 +230,9 @@ class LMS(object):
                             ts0,
                             name='swap_out0_' + src_op.name.replace('/', '_'))
                         swap_out0_sgv = ge.sgv(swap_out0.op, graph=self.graph)
-                        connect_sgv(swap_out_sgv, swap_out0_sgv)
-                        self.excl_ops.add(swap_out0.op)
-                        swap_out_sgv = swap_out0_sgv
+                    connect_sgv(swap_out_sgv, swap_out0_sgv)
+                    self.excl_ops.add(swap_out0.op)
+                    swap_out_sgv = swap_out0_sgv
 
                 # swap_in nodes
                 # TODO: swap_in nodes for branches
