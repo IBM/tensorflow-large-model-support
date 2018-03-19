@@ -458,16 +458,16 @@ class LMS(object):
             if lower_b <= 0:
                 # inside the range
                 consumming_ops_bw = total_consumming_ops & self.grad_ops
-                if len(consumming_ops_bw) > 0:
-                    result_ops |= consumming_ops_bw
-                    # check validation
-                    result_ops = {op
-                                  for op in result_ops 
-                                  if self.topo_sort.get_order(op) > fw_order}
-                    result_ops = {
-                        op 
-                        for op in result_ops
-                        if self.topo_sort.get_order(op) < bw_order}
+                # check validation
+                consumming_ops_bw = {
+                    op
+                    for op in consumming_ops_bw
+                    if self.topo_sort.get_order(op) > fw_order}
+                consumming_ops_bw = {
+                    op 
+                    for op in consumming_ops_bw
+                    if self.topo_sort.get_order(op) < bw_order}
+                result_ops |= consumming_ops_bw
             # go to the next level
             next_ops = total_consumming_ops - self.grad_ops
             for op in next_ops:
