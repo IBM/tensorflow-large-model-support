@@ -14,8 +14,12 @@ class CTRLD_Strategy(Enum):
 
 
 class LMS(object):
-    def __init__(self, graph, optimizer_scope=set(), excl_scopes=set(),
+    def __init__(self, graph, optimizer_scope=set(),
                  starting_scope=None,
+                 excl_scopes=set(),
+                 incl_scopes=set(),
+                 excl_types=set(),
+                 incl_types=set(),
                  lb=1, ub=10000,
                  n_tensors=-1,
                  n_cpu_threads=1,  # experimental feature
@@ -36,6 +40,9 @@ class LMS(object):
         self.graph = graph
         self.optimizer_scope = optimizer_scope
         self.excl_scopes = excl_scopes
+        self.incl_scopes = incl_scopes
+        self.excl_types = excl_types
+        self.incl_types = incl_types
         self.starting_scope = starting_scope
         self.lb = lb  # lowerbound
         self.ub = ub  # upperbound
@@ -49,11 +56,13 @@ class LMS(object):
             self.ctrld_strategy = "chain_rule"
 
         # Operations with these types will be ignored
-        self.atomic_types = ['Const', 'Mul', 'Add',
-                             'Identity', 'Assign', 'VariableV2',
-                             'Reshape', 'Shape', 'ShapeN']
+        atomic_types = {'Const', 'Mul', 'Add',
+                        'Identity', 'Assign', 'VariableV2',
+                        'Reshape', 'Shape', 'ShapeN'}
+        self.excl_types |= atomic_types
 
         self.excl_ops = set()
+        self.incl_ops = set()
         self.grad_ops = set()
         self.topo_sort = None
         self.debug = debug
@@ -98,10 +107,16 @@ class LMS(object):
         # exclusive ops
         for scope in self.excl_scopes:
             self.excl_ops |= set(ge.get_name_scope_ops(reachable_ops, scope))
-        # atomic ops
-        atomic_ops = {op for op in self.fw_reachable_ops
-                      if op.type in self.atomic_types}
-        self.excl_ops |= atomic_ops
+        self.excl_ops |= {op
+                          for op in self.fw_reachable_ops
+                          if op.type in self.excl_types}
+
+        # inclusive ops
+        for scope in self.incl_scopes:
+            self.incl_ops |= set(ge.get_name_scope_ops(reachable_ops, scope))
+        self.incl_ops |= {op
+                          for op in self.fw_reachable_ops
+                          if op.type in self.incl_types}
 
         # build a topological sort
         self.topo_sort = topos.TOPOS(seed_ops, self.graph, self.grad_ops)
@@ -169,6 +184,11 @@ class LMS(object):
         # bypass exclusive ops
         if src_op in self.excl_ops:
             return
+
+        # if inclusive mode is enable
+        if self.incl_ops:
+            if src_op not in self.incl_ops:
+                return
 
         for t in src_op.outputs:
             if self.n_tensors > 0:

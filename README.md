@@ -70,7 +70,13 @@ _optimizer_scope_ :: the scope for the optimizer.
 _starting_scope_ :: Tensors that are reachable from the operations in this scope will be swapped for LMS. Set this to the scope of the first layer if we would like to modify the whole graph.
 
 #### Optional parameters
-_excl_scopes_ :: a set of scopes for tensors we don't want to swap them out to the host.
+_excl_scopes_ :: a set of scopes for operations whose tensors will not be swapped out to the host.
+
+_incl_scopes_ :: a set of scopes for operations whose tensors will be swapped out to the host.
+
+_excl_types_ :: a set of types for operations whose tensors will not be swapped out to the host.
+
+_incl_types_ :: a set of types for operations whose tensors will be swapped out to the host.
 
 _lb_ :: Lowerbound value for LMS. A tensor will be swapped in during the backward phase at least `lb` nodes before it in the graph. Default `1`.
 
