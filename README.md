@@ -70,29 +70,29 @@ _optimizer_scope_ :: the scope for the optimizer.
 _starting_scope_ :: Tensors that are reachable from the operations in this scope will be swapped for LMS. Set this to the scope of the first layer if we would like to modify the whole graph.
 
 #### Optional parameters
-_excl_scopes_ :: a set of scopes for operations whose tensors will not be swapped out to the host.
+_excl_scopes_ :: a set of scopes for operations whose tensors will not be swapped out to the host. Default `empty`.
 
-_incl_scopes_ :: a set of scopes for operations whose tensors will be swapped out to the host.
+_incl_scopes_ :: a set of scopes for operations whose tensors will be swapped out to the host. Default `empty`.
 
-_excl_types_ :: a set of types for operations whose tensors will not be swapped out to the host.
+_excl_types_ :: a set of types for operations whose tensors will not be swapped out to the host. Default `empty`.
 
-_incl_types_ :: a set of types for operations whose tensors will be swapped out to the host.
+_incl_types_ :: a set of types for operations whose tensors will be swapped out to the host. Default `empty`.
+
+_n_tensors_ :: The number of tensors for LMS, counting from the `starting_scope`. To turn off LMS, set `n_tensors` to `0`. Default `-1` (all reachable tensors will be swapped for LMS).
 
 _lb_ :: Lowerbound value for LMS. A tensor will be swapped in during the backward phase at least `lb` nodes before it in the graph. Default `1`.
 
 _ub_ :: Upperbound value for LMS. Default `10000`.
-
-_n_tensors_ :: The number of tensors for LMS, counting from the `starting_scope`. To turn off LMS, set `n_tensors` to `0`. If not set, all reachable tensors will be swapped for LMS (Default).
 
 _debug_ :: Debug mode for LMS. Default `False`.
 
 _debug_level_ :: Debug level for LMS (1 or 2). Default `1`.
 
 #### Optional/Experimental parameters
-_ssg_n_tensors_ :: The number of tensors that will be placed on a second storage, counting from the `starting_scope`. to turn off SSG, set `ssg_n_tensors` to `0` (Default).
+_ssg_n_tensors_ :: The number of tensors that will be placed on a second storage, counting from the `starting_scope`. Default `0` (turn off SSG).
 
 _ssg_id_ :: The GPU device ID that will be used as a second storage for LMS. This is only effective if `ssg_n_tensors` is not `0`. Default `1`.
 
 _ssg_as_buffer :: Use the second storage just as a buffer. Data are finally forwarded to the host via the second storage. Default `False`.
 
-_fuse_swapins_ :: Fuse "close" swap-in operations into one. This may improve the performance. Default `False`
+_fuse_swapins_ :: Fuse "close" swap-in operations into one. This may improve the performance. Default `False`.
