@@ -10,14 +10,14 @@ python setup.py install
 ```
 
 ## How to use
-### Step 1: define optimizer/solver scope and starting scope
+### Step 1: define optimizer/solver scopes and starting scope
 TFLMS needs to know some information about user-defined models.
 There are two must-have parameters:
-- a scope for the optimizer/solver
+- scopes for the optimizers/solvers
 - a scope from which TFLMS starts to discover candidates (tensors) for LMS.
 
 User should define them as follows:
-- For optimizer/solver
+- For optimizers/solvers
 ```python
 with tf.name_scope('adam_optimizer'):
 	train_step = tf.train.AdamOptimizer(1e-4).minimize(cross_entropy)
@@ -35,7 +35,7 @@ Define a LMS object for the graph we want to edit and run it to actually modify 
 ```python
 from lms import LMS
 lms_obj = LMS(graph=tf.get_default_graph(),
-	optimizer_scope='adam_optimizer',
+	optimizer_scopes={'adam_optimizer'},
 	starting_scope='conv1')
 lms_obj.run()
 ```
@@ -51,7 +51,7 @@ with tf.Session() as sess:
 ```python
 from lms import LMS
 lms_obj = LMS(graph=tf.get_default_graph(),
-	optimizer_scope='adam_optimizer',
+	optimizer_scopes={'adam_optimizer'},
 	starting_scope='conv1')
 lms_obj.run()
 
@@ -65,7 +65,7 @@ with tf.Session() as sess:
 #### Required parameters
 _graph_ :: the graph we will modify for LMS. This should be the graph of user-defined neural network.
 
-_optimizer_scope_ :: the scope for the optimizer.
+_optimizer_scopes_ :: scopes for the optimizers/solvers.
 
 _starting_scope_ :: Tensors that are reachable from the operations in this scope will be swapped for LMS. Set this to the scope of the first layer if we would like to modify the whole graph.
 

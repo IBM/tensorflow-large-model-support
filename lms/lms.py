@@ -14,7 +14,7 @@ class CTRLD_Strategy(Enum):
 
 
 class LMS(object):
-    def __init__(self, graph, optimizer_scope=set(),
+    def __init__(self, graph, optimizer_scopes=set(),
                  starting_scope=None,
                  excl_scopes=set(),
                  incl_scopes=set(),
@@ -30,7 +30,7 @@ class LMS(object):
                  ctrld_strategy="chain_rule",
                  debug=False,
                  debug_level=1):
-        if optimizer_scope is None:
+        if optimizer_scopes is None:
             print("set the optimizer scope")
             return
         if starting_scope is None:
@@ -38,7 +38,7 @@ class LMS(object):
             return
 
         self.graph = graph
-        self.optimizer_scope = optimizer_scope
+        self.optimizer_scopes = optimizer_scopes
         self.excl_scopes = excl_scopes
         self.incl_scopes = incl_scopes
         self.excl_types = excl_types
@@ -97,7 +97,7 @@ class LMS(object):
             reachable_ops |= set(ge.get_forward_walk_ops(seed_op))
 
         # gradient ops
-        for scope in self.optimizer_scope:
+        for scope in self.optimizer_scopes:
             self.grad_ops.update(
                 set(ge.filter_ops_from_regex(
                     ge.make_list_of_op(self.graph), "^{}".format(scope))))
