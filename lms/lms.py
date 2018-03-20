@@ -284,7 +284,7 @@ class LMS(object):
                                         remap_inputs=True, idx=input_idx)
 
                             self.log_info("{} (order {}) reuses tensor {}".format(
-                                self.topo_sort.get_order(op), op.name, ts[0].name), 1)
+                                 op.name, self.topo_sort.get_order(op), ts[0].name), 1)
 
                         # control dependency -> swap_in
                         min_order = self.topo_sort.size + 1
@@ -523,12 +523,13 @@ class LMS(object):
         range_ub = src_order - lower_b
         range_lb = max([src_order - upper_b, fw_order]) + 1
 
-        # common ops
-        common_ops = set(ge.get_forward_walk_ops(fw_op)) & set(ge.get_backward_walk_ops(src_op))
         ctrld_order = -1
         for i in reversed(range(range_lb, range_ub)):
             candidates = self.topo_sort.get_ops(i)
-            candidates &= common_ops
+            # on the chain rule path
+            candidates = {op
+                          for op in candidates
+                          if src_op in ge.get_forward_walk_ops(op)}
             if candidates:
                 result_ops |= candidates
                 ctrld_order = i
