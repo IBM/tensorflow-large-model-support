@@ -219,8 +219,9 @@ class LMS(object):
             src_out_idx = None
             # create swap-out node only if the current op has gradient or branch
             if bw_frontier_ops:  # TODO: check branch also
-                self.log_info("Operation: {}, order {}".format(
-                    src_op.name, self.topo_sort.get_order(src_op)), 1)
+                self.log_info("Operation: {}, order {}, type {}".format(
+                    src_op.name, self.topo_sort.get_order(src_op),
+                    src_op.type), 1)
                 ts0 = None
                 src_sgv = ge.sgv(src_op, graph=self.graph)
                 sample_op = next(iter(bw_frontier_ops))
