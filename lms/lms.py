@@ -214,147 +214,113 @@ class LMS(object):
             if not bw_frontier_ops:
                 continue
 
-            # swap-out node
-            swap_out_sgv = None
-            src_out_idx = None
-            # create swap-out node only if the current op has gradient or branch
-            if bw_frontier_ops:  # TODO: check branch also
-                self.log_info("Operation: {}, order {}, type {}".format(
-                    src_op.name, self.topo_sort.get_order(src_op),
-                    src_op.type), 1)
-                ts0 = None
-                src_sgv = ge.sgv(src_op, graph=self.graph)
-                sample_op = next(iter(bw_frontier_ops))
-                ts = ge.filter_ts_from_regex(sample_op, src_op.name)
-                ts0 = ts[0]
+            self.log_info("Operation: {}, order {}, type {}".format(
+                src_op.name, self.topo_sort.get_order(src_op),
+                src_op.type), 1)
 
-                with tf.device(self.get_ext_device(True)):
-                    # TODO: put this op into the same scope as src_op
-                    swap_out = tf.identity(
-                        ts0,
-                        name='swap_out_' + src_op.name.replace('/', '_'))
-                swap_out_sgv = ge.sgv(swap_out.op, graph=self.graph)
+            # create swap_out node
+            sample_op = next(iter(bw_frontier_ops))
+            dev = self.get_ext_device(True)
+            swapout_op = self.add_swapout(src_op, sample_op, dev)
 
-                # get output index
-                src_out_idx = src_sgv.output_index(ts0)
-
-                # Connect: src-node -> swap-out
-                connect_sgv(src_sgv, swap_out_sgv,
-                            remap_outputs=True, idx=src_out_idx)
-                self.excl_ops.add(swap_out.op)
-                self.log_info("Tensor {} will be placed on {}".format(
-                    ts0.name, self.get_ext_device()), 1)
-
-                if self.ssg_as_buffer and ("GPU" in self.get_ext_device()):
-                    with tf.device("/cpu:0"):
-                        swap_out0 = tf.identity(
-                            ts0,
-                            name='swap_out0_' + src_op.name.replace('/', '_'))
-                        swap_out0_sgv = ge.sgv(swap_out0.op, graph=self.graph)
-                    connect_sgv(swap_out_sgv, swap_out0_sgv)
-                    self.excl_ops.add(swap_out0.op)
-                    swap_out_sgv = swap_out0_sgv
-
-                # swap_in nodes
-                # TODO: swap_in nodes for branches
-                if self.fuse_swapins:
-                    fuse_bw_frontier_ops = {
-                        op for op in bw_frontier_ops
-                        if self.topo_sort.get_order(op) > 0}
-                    if fuse_bw_frontier_ops:
-                        dev = "/cpu:0" if self.ssg_as_buffer else self.get_ext_device()
-                        # TODO: put this op into the same scope as dest_op
-                        with tf.device(dev):
-                            swap_in = tf.identity(
-                                ts0,
-                                name='swap_in_' + src_op.name.replace('/', '_'))
-                            swap_in_sgv = ge.sgv(swap_in.op, graph=self.graph)
-
-                        # Connect: swap_out -> swap_in
-                        connect_sgv(swap_out_sgv, swap_in_sgv)
-                        self.excl_ops.add(swap_in.op)
-
-                        # reuse swap_in tensors
-                        for op in fuse_bw_frontier_ops:
-                            op_sgv = ge.sgv(op, graph=self.graph)
-                            ts = ge.filter_ts_from_regex(op, src_op.name)
-                            # Connect: swap_in -> dest
-                            input_idx = op_sgv.input_index(ts[0])
-                            connect_sgv(swap_in_sgv, op_sgv,
-                                        remap_inputs=True, idx=input_idx)
-
-                            self.log_info("{} (order {}) reuses tensor {}".format(
-                                 op.name, self.topo_sort.get_order(op), ts[0].name), 1)
-
-                        # control dependency -> swap_in
-                        min_order = self.topo_sort.size + 1
-                        earliest_op = None
-                        for op in fuse_bw_frontier_ops:
-                            order = self.topo_sort.get_order(op)
-                            if order < min_order:
-                                min_order = order
-                                earliest_op = op
-                        if earliest_op:
-                            self.add_ctrld(src_op, earliest_op, swap_in.op,
-                                           self.lb, self.ub)
-                        bw_frontier_ops -= fuse_bw_frontier_ops
-
-                for dest_op in bw_frontier_ops:
-                    dest_sgv = ge.sgv(dest_op, graph=self.graph)
-                    ts = ge.filter_ts_from_regex(dest_op, src_op.name)
-
-                    dev = "/cpu:0" if self.ssg_as_buffer else self.get_ext_device()
+            # create swap_in nodes
+            # TODO: swap_in nodes for branches
+            if self.fuse_swapins:
+                fuse_bw_frontier_ops = {
+                    op for op in bw_frontier_ops
+                    if self.topo_sort.get_order(op) > 0}
+                if fuse_bw_frontier_ops:
+                    ts = ge.filter_ts_from_regex(sample_op, src_op.name)
+                    dev = "/cpu:0" if self.ssg_as_buffer \
+                          else self.get_ext_device()
                     with tf.device(dev):
-                        swap_in = tf.identity(
-                            ts[0],
-                            name='swap_in_' + dest_op.name.replace('/', '_'))
-                        swap_in_sgv = ge.sgv(swap_in.op, graph=self.graph)
+                        swap_in = tf.identity(ts[0])
 
                     # Connect: swap_out -> swap_in
-                    connect_sgv(swap_out_sgv, swap_in_sgv)
-
-                    # Connect: swap_in -> dest
-                    input_idx = dest_sgv.input_index(ts[0])
-                    connect_sgv(swap_in_sgv, dest_sgv,
-                                remap_inputs=True, idx=input_idx)
+                    connect_ops(swapout_op, swap_in.op, self.graph)
                     self.excl_ops.add(swap_in.op)
 
-                    self.log_info("Consuming op {} (order {}) swaps in {}".format(
-                        dest_op.name, self.topo_sort.get_order(dest_op),
-                        ts[0].name), 1)
+                    # reuse swap_in tensors
+                    for op in fuse_bw_frontier_ops:
+                        ts = ge.filter_ts_from_regex(op, src_op.name)
+                        # Connect: swap_in -> dest
+                        input_idx = ge.sgv(
+                            op, graph=self.graph).input_index(ts[0])
+                        connect_ops(swap_in.op, op, self.graph,
+                                    remap_inputs=True, idx=input_idx)
+
+                        self.log_info(
+                            "{} (order {}) reuses tensor {}".format(
+                                op.name,
+                                self.topo_sort.get_order(op),
+                                ts[0].name),
+                            1)
 
                     # control dependency -> swap_in
-                    self.add_ctrld(src_op, dest_op, swap_in.op,
-                                   self.lb, self.ub)
+                    min_order = self.topo_sort.size + 1
+                    earliest_op = None
+                    for op in fuse_bw_frontier_ops:
+                        order = self.topo_sort.get_order(op)
+                        if order < min_order:
+                            min_order = order
+                            earliest_op = op
+                    if earliest_op:
+                        self.add_ctrld(src_op, earliest_op, swap_in.op,
+                                       self.lb, self.ub)
+                    bw_frontier_ops -= fuse_bw_frontier_ops
 
-    def get_ext_device(self, update=False):
-        return self.roundrobin_ext_device(update)
+            for dest_op in bw_frontier_ops:
+                dev = "/cpu:0" if self.ssg_as_buffer \
+                      else self.get_ext_device()
+                # swap_in op
+                swapin_op = self.add_swapin(swapout_op, src_op, dest_op, dev)
+                # control dependency -> swap_in
+                self.add_ctrld(src_op, dest_op, swapin_op, self.lb, self.ub)
 
-    def roundrobin_ext_device(self, update=False):
-        # choose GPU device first
-        if self.currentSSG:  # previous one is GPU memory, now use host memory
-            if update:
-                self.incpu_count = self.incpu_count + 1
-                self.currentSSG = False
-                return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
-            else:
-                # get only
-                return "/device:GPU:{}".format(self.ssg_id)
-        else:  # previous one is host memory, now use GPU or host memory
-            if update:
-                # if having slots for GPU, use GPU
-                if (self.ingpu_count < self.ssg_n_tensors):
-                    self.ingpu_count = self.ingpu_count + 1
-                    self.currentSSG = True
-                    return "/device:GPU:{}".format(self.ssg_id)
-                else:  # otherwise, use host
-                    self.incpu_count = self.incpu_count + 1
-                    self.currentSSG = False
-                    return "/cpu:{}".format(
-                        self.incpu_count % self.n_cpu_threads)
-            else:
-                # get only
-                return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
+    def add_swapout(self, src_op, dest_op, dev):
+        ts = ge.filter_ts_from_regex(dest_op, src_op.name)
+        ts0 = ts[0]
+
+        with tf.device(dev):
+            swap_out = tf.identity(ts0)
+
+        # Connect: src-node -> swap-out
+        src_out_idx = ge.sgv(src_op, graph=self.graph).output_index(ts0)
+        connect_ops(src_op, swap_out.op, self.graph,
+                    remap_outputs=True, idx=src_out_idx)
+        self.excl_ops.add(swap_out.op)
+        self.log_info("Tensor {} will be placed on {}".format(
+            ts0.name, self.get_ext_device()), 1)
+
+        if self.ssg_as_buffer and ("GPU" in self.get_ext_device()):
+            with tf.device("/cpu:0"):
+                swap_out0 = tf.identity(ts0)
+                connect_ops(swap_out.op, swap_out0.op)
+                self.excl_ops.add(swap_out0.op)
+                swap_out = swap_out0
+        return swap_out.op
+
+    def add_swapin(self, swapout_op, src_op, dest_op, dev):
+        ts = ge.filter_ts_from_regex(dest_op, src_op.name)
+        ts0 = ts[0]
+
+        with tf.device(dev):
+            swap_in = tf.identity(ts0)
+
+        # Connect: swap_out -> swap_in
+        connect_ops(swapout_op, swap_in.op, self.graph)
+
+        # Connect: swap_in -> dest
+        input_idx = ge.sgv(dest_op, graph=self.graph).input_index(ts[0])
+        connect_ops(swap_in.op, dest_op, self.graph,
+                    remap_inputs=True, idx=input_idx)
+        self.excl_ops.add(swap_in.op)
+
+        self.log_info("Consuming op {} (order {}) swaps in {}".format(
+            dest_op.name, self.topo_sort.get_order(dest_op),
+            ts0.name), 1)
+
+        return swap_in.op
 
     def add_ctrld(self, fw_op, bw_op, swapin_op, lb, ub):
         if self.topo_sort.get_order(bw_op) < 0:
@@ -409,23 +375,23 @@ class LMS(object):
                 min_order = order
                 nco_op = op
         return nco_op
-        
+
     def find_inscope(self, scope):
         current_scope = scope
         higher_scope = current_scope.rsplit('/', 1)[0]
-        
+
         visited_ops = set()
         while (current_scope != higher_scope):
             ops = set(ge.filter_ops_from_regex(
                 ge.make_list_of_op(self.graph),
                 "^{}".format(higher_scope)))
-            
+
             # not consider inner ops
             ops1 = ops - visited_ops
 
             # gradient ops only
             ops1 &= self.grad_ops
-        
+
             # ops in chain rule
             ops1 = {op for op in ops1 if self.topo_sort.get_order(op) > 0}
 
@@ -541,6 +507,35 @@ class LMS(object):
         else:
             return (None, -1)
 
+    def get_ext_device(self, update=False):
+        return self.roundrobin_ext_device(update)
+
+    def roundrobin_ext_device(self, update=False):
+        # choose GPU device first
+        if self.currentSSG:  # previous one is GPU memory, now use host memory
+            if update:
+                self.incpu_count = self.incpu_count + 1
+                self.currentSSG = False
+                return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
+            else:
+                # get only
+                return "/device:GPU:{}".format(self.ssg_id)
+        else:  # previous one is host memory, now use GPU or host memory
+            if update:
+                # if having slots for GPU, use GPU
+                if (self.ingpu_count < self.ssg_n_tensors):
+                    self.ingpu_count = self.ingpu_count + 1
+                    self.currentSSG = True
+                    return "/device:GPU:{}".format(self.ssg_id)
+                else:  # otherwise, use host
+                    self.incpu_count = self.incpu_count + 1
+                    self.currentSSG = False
+                    return "/cpu:{}".format(
+                        self.incpu_count % self.n_cpu_threads)
+            else:
+                # get only
+                return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
+
     def log_info(self, message, level=0):
         if level == 0 or (self.debug and self.debug_level >= level):
             # Use tf.logging.info instead of print, since print
@@ -555,9 +550,11 @@ class LMS(object):
         self.log_info("lb: {}".format(self.lb))
 
 
-def connect_sgv(src_sgv, dest_sgv,
+def connect_ops(src_op, dest_op, graph,
                 remap_inputs=False, remap_outputs=False,
                 idx=None, disconnect_first=False):
+    src_sgv = ge.sgv(src_op, graph=graph)
+    dest_sgv = ge.sgv(dest_op, graph=graph)
     if remap_outputs:
         src_sgv = src_sgv.remap_outputs([idx])
     if remap_inputs:
