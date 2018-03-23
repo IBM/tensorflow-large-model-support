@@ -4,6 +4,7 @@ from toposort import toposort as tps
 import tensorflow.contrib.graph_editor as ge
 from tensorflow.contrib.graph_editor import util
 
+
 class TOPOS(object):
     def __init__(self, seed_ops, graph, grad_ops):
         self.graph = graph
@@ -17,7 +18,7 @@ class TOPOS(object):
         topo_sort = list(tps(self.build_dependency_dict()))
         for i in range(0, len(topo_sort)):
             self.topo_sort[i] = topo_sort[i]
-    
+
         # if a bw op has the same order with a fw op,
         # then remove the bw op
         self.clean_bw_ops()
@@ -42,6 +43,9 @@ class TOPOS(object):
         for op in self.seed_ops:
             open_set.put(op)
 
+        reachable_ops = set(ge.get_walks_intersection_ops(
+            list(self.seed_ops), list(self.grad_ops)))
+
         # traversal in the fw phase
         while not open_set.empty():
             src_op = open_set.get()
@@ -50,6 +54,7 @@ class TOPOS(object):
             dep_ops = set(src_op.control_inputs)
             for t in src_op.inputs:
                 dep_ops |= set(util.get_generating_ops(t))
+                dep_ops &= reachable_ops
             dep_dict[src_op] = dep_ops
 
             next_ops = set()
@@ -66,7 +71,7 @@ class TOPOS(object):
         return dep_dict
 
     def clean_bw_ops(self):
-        '''There are some bw ops that 
+        '''There are some bw ops that
              - have no incoming bw ops except its fw op, or
              - have no outgoing ops.
         Execution order of these ops may depend on Tensorflow runtime.
@@ -75,7 +80,6 @@ class TOPOS(object):
         for i in range(0, len(self.topo_sort)):
             dep_ops = self.topo_sort[i]
             fw_dep_ops = dep_ops - self.grad_ops
-            bw_dep_ops = dep_ops & self.grad_ops
             if fw_dep_ops:
                 self.topo_sort[i] = fw_dep_ops
             else:
