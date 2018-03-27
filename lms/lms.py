@@ -22,14 +22,14 @@ class LMS(object):
                  incl_types=set(),
                  lb=1, ub=10000,
                  n_tensors=-1,
-                 n_cpu_threads=1,  # experimental feature
                  ssg_n_tensors=0,  # the number of tensors for second storage
                  ssg_id="1",
                  ssg_as_buffer=False,
                  fuse_swapins=False,
                  ctrld_strategy="chain_rule",
                  debug=False,
-                 debug_level=1):
+                 debug_level=1,
+                 cpu_device="/cpu:0"):
         if optimizer_scopes is None:
             print("set the optimizer scope")
             return
@@ -65,6 +65,7 @@ class LMS(object):
         self.incl_ops = set()
         self.grad_ops = set()
         self.topo_sort = None
+        self.cpu_device = cpu_device
         self.debug = debug
         self.debug_level = debug_level
 
@@ -73,7 +74,6 @@ class LMS(object):
         self.ssg_id = ssg_id
         self.ssg_as_buffer = ssg_as_buffer
         self.incpu_count = 0
-        self.n_cpu_threads = n_cpu_threads
 
         # for roundrobin scheduling
         self.currentSSG = False
@@ -150,6 +150,7 @@ class LMS(object):
         self.log_info(
             "{} tensors will be swapped out(in) to(from) the host".format(
                 self.incpu_count))
+        return (new_reachable_ops - reachable_ops)
 
     def do_action(self, src_ops):  # BFS
         open_set = Queue.Queue()
@@ -231,7 +232,7 @@ class LMS(object):
                     if self.topo_sort.get_order(op) > 0}
                 if fuse_bw_frontier_ops:
                     ts = ge.filter_ts_from_regex(sample_op, src_op.name)
-                    dev = "/cpu:0" if self.ssg_as_buffer \
+                    dev = self.cpu_device if self.ssg_as_buffer \
                           else self.get_ext_device()
                     with tf.device(dev):
                         swap_in = tf.identity(ts[0])
@@ -270,7 +271,7 @@ class LMS(object):
                     bw_frontier_ops -= fuse_bw_frontier_ops
 
             for dest_op in bw_frontier_ops:
-                dev = "/cpu:0" if self.ssg_as_buffer \
+                dev = self.cpu_device if self.ssg_as_buffer \
                       else self.get_ext_device()
                 # swap_in op
                 swapin_op = self.add_swapin(swapout_op, src_op, dest_op, dev)
@@ -293,7 +294,7 @@ class LMS(object):
             ts0.name, self.get_ext_device()), 1)
 
         if self.ssg_as_buffer and ("GPU" in self.get_ext_device()):
-            with tf.device("/cpu:0"):
+            with tf.device(self.cpu_device):
                 swap_out0 = tf.identity(ts0)
                 connect_ops(swap_out.op, swap_out0.op)
                 self.excl_ops.add(swap_out0.op)
@@ -516,7 +517,7 @@ class LMS(object):
             if update:
                 self.incpu_count = self.incpu_count + 1
                 self.currentSSG = False
-                return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
+                return self.cpu_device
             else:
                 # get only
                 return "/device:GPU:{}".format(self.ssg_id)
@@ -530,11 +531,10 @@ class LMS(object):
                 else:  # otherwise, use host
                     self.incpu_count = self.incpu_count + 1
                     self.currentSSG = False
-                    return "/cpu:{}".format(
-                        self.incpu_count % self.n_cpu_threads)
+                    return self.cpu_device
             else:
                 # get only
-                return "/cpu:{}".format(self.incpu_count % self.n_cpu_threads)
+                return self.cpu_device
 
     def log_info(self, message, level=0):
         if level == 0 or (self.debug and self.debug_level >= level):
