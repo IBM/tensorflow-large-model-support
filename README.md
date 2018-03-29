@@ -12,36 +12,35 @@ python setup.py install
 ## How to use
 ### Step 1: define optimizer/solver scopes and starting scope
 TFLMS needs to know some information about user-defined models.
-There are two must-have parameters:
-- scopes for the optimizers/solvers
-- a scope from which TFLMS starts to discover candidates (tensors) for LMS.
+There are two requirements for a user-defined model:
+- it must have a placeholder operation for the model's input.
+- it must have scopes for the optimizers/solvers.
 
-User should define them as follows:
-- For optimizers/solvers
+For placeholder, user can define as follows:
+```python
+# Create the model
+x = tf.placeholder(tf.float32, [None, 784])
+```
+
+For optimizers/solvers, user can define as follows:
 ```python
 with tf.name_scope('adam_optimizer'):
 	train_step = tf.train.AdamOptimizer(1e-4).minimize(cross_entropy)
-```
-- For the starting scope
-```python
-with tf.name_scope('conv1'):
-	W_conv1 = weight_variable([5, 5, 1, 32])
-	b_conv1 = bias_variable([32])
-	h_conv1 = tf.nn.relu(conv2d(x_image, W_conv1) + b_conv1)
 ```
 
 ### Step 2: define a LMS object and run it
 Define a LMS object for the graph we want to edit and run it to actually modify the graph.
 ```python
 from lms import LMS
-lms_obj = LMS(graph=tf.get_default_graph(),
-	optimizer_scopes={'adam_optimizer'},
-	starting_scope='conv1')
+lms_obj = LMS(graph=tf.get_default_graph(),	optimizer_scopes={'adam_optimizer'})
 lms_obj.run()
 ```
 The above lines must be put before starting a traning session, for example:
 - before
 ```python
+# Create the model
+x = tf.placeholder(tf.float32, [None, 784])
+# other lines for creating the mode are omitted
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
 	batch = mnist.train.next_batch(50)
@@ -49,10 +48,12 @@ with tf.Session() as sess:
 ```
 - after inserting LMS code
 ```python
+# Create the model
+x = tf.placeholder(tf.float32, [None, 784])
+# other lines for creating the mode are omitted
+
 from lms import LMS
-lms_obj = LMS(graph=tf.get_default_graph(),
-	optimizer_scopes={'adam_optimizer'},
-	starting_scope='conv1')
+lms_obj = LMS(graph=tf.get_default_graph(),	optimizer_scopes={'adam_optimizer'})
 lms_obj.run()
 
 with tf.Session() as sess:
@@ -67,9 +68,9 @@ _graph_ :: the graph we will modify for LMS. This should be the graph of user-de
 
 _optimizer_scopes_ :: scopes for the optimizers/solvers.
 
-_starting_scope_ :: Tensors that are reachable from the operations in this scope will be swapped for LMS. Set this to the scope of the first layer if we would like to modify the whole graph.
-
 #### Optional parameters
+_starting_scope_ :: Tensors that are reachable from the operations in this scope will be swapped for LMS. Set this to the scope of the first layer if we would like to modify the whole graph. Default `None`.
+
 _excl_scopes_ :: a set of scopes for operations whose tensors will not be swapped out to the host. Default `empty`.
 
 _incl_scopes_ :: a set of scopes for operations whose tensors will be swapped out to the host. Default `empty`.

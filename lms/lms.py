@@ -33,9 +33,6 @@ class LMS(object):
         if optimizer_scopes is None:
             print("set the optimizer scope")
             return
-        if starting_scope is None:
-            print("set the starting scope")
-            return
 
         self.graph = graph
         self.optimizer_scopes = optimizer_scopes
@@ -89,18 +86,29 @@ class LMS(object):
         self.print_configuration()
         start_time = time.time()
 
-        seed_ops = ge.filter_ops_from_regex(
-            ge.make_list_of_op(self.graph), "^{}".format(self.starting_scope))
-
-        reachable_ops = set()
-        for seed_op in seed_ops:
-            reachable_ops |= set(ge.get_forward_walk_ops(seed_op))
-
         # gradient ops
         for scope in self.optimizer_scopes:
             self.grad_ops.update(
                 set(ge.filter_ops_from_regex(
                     ge.make_list_of_op(self.graph), "^{}".format(scope))))
+
+        # seep ops for search
+        seed_ops = None
+        if self.starting_scope is not None:
+            seed_ops = ge.filter_ops_from_regex(
+                ge.make_list_of_op(self.graph), "^{}".format(
+                    self.starting_scope))
+        else:
+            placeholders = [
+                op
+                for op in self.graph.get_operations()
+                if ((op.type == "Placeholder") and
+                    (set(ge.get_forward_walk_ops(op)) & self.grad_ops))]
+            seed_ops = placeholders
+
+        reachable_ops = set()
+        for seed_op in seed_ops:
+            reachable_ops |= set(ge.get_forward_walk_ops(seed_op))
 
         self.fw_reachable_ops = reachable_ops - self.grad_ops
 
