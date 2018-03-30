@@ -29,12 +29,11 @@ with tf.name_scope('adam_optimizer'):
 ```
 
 ### Step 2: define a LMS object and run it
-Define a LMS object for the graph we want to edit and run it to actually modify the graph.
+Define a LMS object for the graph we want to edit, and run it to actually modify the graph.
 ```python
 from lms import LMS
-lms_obj = LMS(graph=tf.get_default_graph(),
-              optimizer_scopes={'adam_optimizer'})
-lms_obj.run()
+lms_obj = LMS(optimizer_scopes={'adam_optimizer'})
+lms_obj.run(graph=tf.get_default_graph())
 ```
 The above lines must be put before starting a traning session, for example:
 - before
@@ -54,9 +53,8 @@ x = tf.placeholder(tf.float32, [None, 784])
 # other lines for creating the mode are omitted
 
 from lms import LMS
-lms_obj = LMS(graph=tf.get_default_graph(), 
-              optimizer_scopes={'adam_optimizer'})
-lms_obj.run()
+lms_obj = LMS(optimizer_scopes={'adam_optimizer'})
+lms_obj.run(graph=tf.get_default_graph())
 
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
