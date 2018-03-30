@@ -14,7 +14,7 @@ class CTRLD_Strategy(Enum):
 
 
 class LMS(object):
-    def __init__(self, graph, optimizer_scopes=set(),
+    def __init__(self, graph=None, optimizer_scopes=set(),
                  starting_scope=None,
                  excl_scopes=set(),
                  incl_scopes=set(),
@@ -31,7 +31,7 @@ class LMS(object):
                  debug_level=1,
                  cpu_device="/cpu:0"):
         if optimizer_scopes is None:
-            print("set the optimizer scope")
+            self.log_info("set the optimizer scope")
             return
 
         self.graph = graph
@@ -75,7 +75,14 @@ class LMS(object):
         # for roundrobin scheduling
         self.currentSSG = False
 
-    def run(self):
+    def run(self, graph=None):
+        if graph is not None:
+            self.graph = graph
+
+        if self.graph is None:
+            self.log_info("Input graph: Not found")
+            return
+
         if self.n_tensors == 0:
             self.log_info("Not modify model for LMS")
             return  # turn off LMS
@@ -105,6 +112,9 @@ class LMS(object):
                 if ((op.type == "Placeholder") and
                     (set(ge.get_forward_walk_ops(op)) & self.grad_ops))]
             seed_ops = placeholders
+        self.log_info(
+            "Starting ops: {}".format(
+                [(op.name, op.type) for op in seed_ops]), 1)
 
         reachable_ops = set()
         for seed_op in seed_ops:
