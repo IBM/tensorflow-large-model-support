@@ -22,9 +22,6 @@ class LMS(object):
                  incl_types=set(),
                  lb=1, ub=10000,
                  n_tensors=-1,
-                 ssg_n_tensors=0,  # the number of tensors for second storage
-                 ssg_id="1",
-                 ssg_as_buffer=False,
                  fuse_swapins=False,
                  ctrld_strategy="chain_rule",
                  debug=False,
@@ -66,14 +63,8 @@ class LMS(object):
         self.debug = debug
         self.debug_level = debug_level
 
-        self.ingpu_count = 0
-        self.ssg_n_tensors = ssg_n_tensors
-        self.ssg_id = ssg_id
-        self.ssg_as_buffer = ssg_as_buffer
+        # keep log of tensors on host
         self.incpu_count = 0
-
-        # for roundrobin scheduling
-        self.currentSSG = False
 
     def run(self, graph=None):
         if graph is not None:
@@ -157,14 +148,6 @@ class LMS(object):
 
         self.log_info("Editing model for LMS, took: {} ms".format(
             (time.time()-start_time)/1000))
-        if (self.ingpu_count > 0):
-            self.log_info(
-                "{} tensors will be swapped out(in) to(from) GPU device {}".format(
-                    self.ingpu_count, self.ssg_id))
-            if self.ssg_as_buffer:
-                self.log_info(
-                    "The GPU device {} is just used as a buffer.".format(
-                        self.ssg_id))
         self.log_info(
             "{} tensors will be swapped out(in) to(from) the host".format(
                 self.incpu_count))
@@ -239,8 +222,7 @@ class LMS(object):
 
             # create swap_out node
             sample_op = next(iter(bw_frontier_ops))
-            dev = self.get_ext_device(True)
-            swapout_op = self.add_swapout(src_op, sample_op, dev)
+            swapout_op = self.add_swapout(src_op, sample_op)
 
             # create swap_in nodes
             # TODO: swap_in nodes for branches
@@ -250,9 +232,7 @@ class LMS(object):
                     if self.topo_sort.get_order(op) > 0}
                 if fuse_bw_frontier_ops:
                     ts = ge.filter_ts_from_regex(sample_op, src_op.name)
-                    dev = self.cpu_device if self.ssg_as_buffer \
-                          else self.get_ext_device()
-                    with tf.device(dev):
+                    with tf.device(self.cpu_device):
                         swap_in = tf.identity(ts[0])
 
                     # Connect: swap_out -> swap_in
@@ -289,18 +269,16 @@ class LMS(object):
                     bw_frontier_ops -= fuse_bw_frontier_ops
 
             for dest_op in bw_frontier_ops:
-                dev = self.cpu_device if self.ssg_as_buffer \
-                      else self.get_ext_device()
                 # swap_in op
-                swapin_op = self.add_swapin(swapout_op, src_op, dest_op, dev)
+                swapin_op = self.add_swapin(swapout_op, src_op, dest_op)
                 # control dependency -> swap_in
                 self.add_ctrld(src_op, dest_op, swapin_op, self.lb, self.ub)
 
-    def add_swapout(self, src_op, dest_op, dev):
+    def add_swapout(self, src_op, dest_op):
         ts = ge.filter_ts_from_regex(dest_op, src_op.name)
         ts0 = ts[0]
 
-        with tf.device(dev):
+        with tf.device(self.cpu_device):
             swap_out = tf.identity(ts0)
 
         # Connect: src-node -> swap-out
@@ -309,21 +287,15 @@ class LMS(object):
                     remap_outputs=True, idx=src_out_idx)
         self.excl_ops.add(swap_out.op)
         self.log_info("Tensor {} will be placed on {}".format(
-            ts0.name, self.get_ext_device()), 1)
+            ts0.name, self.cpu_device), 1)
 
-        if self.ssg_as_buffer and ("GPU" in self.get_ext_device()):
-            with tf.device(self.cpu_device):
-                swap_out0 = tf.identity(ts0)
-                connect_ops(swap_out.op, swap_out0.op)
-                self.excl_ops.add(swap_out0.op)
-                swap_out = swap_out0
         return swap_out.op
 
-    def add_swapin(self, swapout_op, src_op, dest_op, dev):
+    def add_swapin(self, swapout_op, src_op, dest_op):
         ts = ge.filter_ts_from_regex(dest_op, src_op.name)
         ts0 = ts[0]
 
-        with tf.device(dev):
+        with tf.device(self.cpu_device):
             swap_in = tf.identity(ts0)
 
         # Connect: swap_out -> swap_in
@@ -470,7 +442,7 @@ class LMS(object):
                     for op in consumming_ops_bw
                     if self.topo_sort.get_order(op) > fw_order}
                 consumming_ops_bw = {
-                    op 
+                    op
                     for op in consumming_ops_bw
                     if self.topo_sort.get_order(op) < bw_order}
                 result_ops |= consumming_ops_bw
@@ -525,34 +497,6 @@ class LMS(object):
             return (ctrld_op, ctrld_order)
         else:
             return (None, -1)
-
-    def get_ext_device(self, update=False):
-        return self.roundrobin_ext_device(update)
-
-    def roundrobin_ext_device(self, update=False):
-        # choose GPU device first
-        if self.currentSSG:  # previous one is GPU memory, now use host memory
-            if update:
-                self.incpu_count = self.incpu_count + 1
-                self.currentSSG = False
-                return self.cpu_device
-            else:
-                # get only
-                return "/device:GPU:{}".format(self.ssg_id)
-        else:  # previous one is host memory, now use GPU or host memory
-            if update:
-                # if having slots for GPU, use GPU
-                if (self.ingpu_count < self.ssg_n_tensors):
-                    self.ingpu_count = self.ingpu_count + 1
-                    self.currentSSG = True
-                    return "/device:GPU:{}".format(self.ssg_id)
-                else:  # otherwise, use host
-                    self.incpu_count = self.incpu_count + 1
-                    self.currentSSG = False
-                    return self.cpu_device
-            else:
-                # get only
-                return self.cpu_device
 
     def log_info(self, message, level=0):
         if level == 0 or (self.debug and self.debug_level >= level):
