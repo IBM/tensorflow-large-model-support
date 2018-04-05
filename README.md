@@ -117,15 +117,8 @@ _lb_ :: Lowerbound value for LMS. A tensor will be swapped in during the backwar
 
 _ub_ :: Upperbound value for LMS. Default `10000`.
 
+_fuse_swapins_ :: Fuse "close" swap-in operations into one operation. This may improve the performance. Default `False`.
+
 _debug_ :: Debug mode for LMS. Default `False`.
 
 _debug_level_ :: Debug level for LMS (1 or 2). Default `1`.
-
-#### Optional/Experimental parameters
-_ssg_n_tensors_ :: The number of tensors that will be placed on a second storage, counting from the `starting_scope`. Default `0` (turn off SSG).
-
-_ssg_id_ :: The GPU device ID that will be used as a second storage for LMS. This is only effective if `ssg_n_tensors` is not `0`. Default `1`.
-
-_ssg_as_buffer :: Use the second storage just as a buffer. Data are finally forwarded to the host via the second storage. Default `False`.
-
-_fuse_swapins_ :: Fuse "close" swap-in operations into one. This may improve the performance. Default `False`.
