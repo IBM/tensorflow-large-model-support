@@ -79,7 +79,7 @@ with tf.name_scope('adam_optimizer'):
         loss=loss,
 	global_step=tf.train.get_global_step())
 ```
-#### Step 2: define an LMSHook (LMSHook and LMS share the same set of parameter)
+#### Step 2: define an LMSHook (LMSHook and LMS share the same set of parameters)
 ```python
 # Hook for Large Model Support
 from lms import LMSHook
