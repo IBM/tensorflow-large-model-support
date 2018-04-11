@@ -115,12 +115,30 @@ class LMS(object):
                 ge.make_list_of_op(self.graph), "^{}".format(
                     self.starting_scope))
         else:
-            placeholders = [
-                op
-                for op in self.graph.get_operations()
-                if ((op.type == "Placeholder") and
-                    (set(ge.get_forward_walk_ops(op)) & self.grad_ops))]
-            seed_ops = placeholders
+            candidates = set()
+            for op in self.graph.get_operations():
+                if op in self.grad_ops:
+                    continue
+                for t in op.outputs:
+                    frontier_ops = set(util.get_consuming_ops(t))
+                    if (frontier_ops & self.grad_ops):
+                        candidates.add(op)
+                        break
+
+            # ordering an operation by how much it covers the other ops
+            tmp_dict = {}
+            sorted_list = []
+            for op in candidates:
+                nelems = len(set(ge.get_forward_walk_ops(op, inclusive=False))
+                             & candidates)
+                if nelems > 0:
+                    tmp_dict[op] = nelems
+            for key, value in sorted(tmp_dict.items(),
+                                     key=lambda x: x[1]):
+                sorted_list.append(key)
+            # seed ops will cover most of the forward ops
+            seed_ops = [sorted_list[-1]]
+
         self.log_info(
             "Starting ops: {}".format(
                 [(op.name, op.type) for op in seed_ops]), 1)

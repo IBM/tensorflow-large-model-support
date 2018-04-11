@@ -11,17 +11,10 @@ python setup.py install
 
 ## How to use
 TFLMS needs to know some information about user-defined models.
-There are two requirements for a user-defined model:
-- it must have a placeholder operation for the model's input, or a scope for the first layer (or any layer from which users want to start swapping tensors).
-- it must have scopes for the optimizers/solvers.
+There is one requirement for a user-defined model: it must have scopes for the optimizers/solvers.
 
 Enabling LMS for a model depends on how users write their training. Followings are guidelines for two ways: [Session](https://www.tensorflow.org/programmers_guide/graphs)-based training and [Estimator](https://www.tensorflow.org/programmers_guide/estimators)-based training.
 ### [Session](https://www.tensorflow.org/programmers_guide/graphs)-based training
-Assume that the user-defined model has a placeholder for input data
-```python
-# Create the model
-x = tf.placeholder(tf.float32, [None, 784])
-```
 #### Step 1: define optimizer/solver scopes
 ```python
 with tf.name_scope('adam_optimizer'):
@@ -36,9 +29,6 @@ lms_obj.run(graph=tf.get_default_graph())
 The above lines must be put before starting a traning session, for example:
 - Before inserting LMS code
 ```python
-# Create the model
-x = tf.placeholder(tf.float32, [None, 784])
-# other lines for creating the mode are omitted
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
 	batch = mnist.train.next_batch(50)
@@ -46,10 +36,6 @@ with tf.Session() as sess:
 ```
 - After inserting LMS code
 ```python
-# Create the model
-x = tf.placeholder(tf.float32, [None, 784])
-# other lines for creating the mode are omitted
-
 from lms import LMS
 lms_obj = LMS(optimizer_scopes={'adam_optimizer'})
 lms_obj.run(graph=tf.get_default_graph())
@@ -61,16 +47,6 @@ with tf.Session() as sess:
 ```
 For more information, see [mnist_deep_lms.py](examples/mnist_deep_lms.py).
 ### [Estimator](https://www.tensorflow.org/programmers_guide/estimators)-based training
-Assume that the user-defined model DOESN'T HAVE a placeholder for input data. In this case, users need to define a scope for the first layer (or any layer from which users want to start swapping tensors):
-```python
-with tf.name_scope('conv1'):
-    conv1 = tf.layers.conv2d(
-      inputs=input_layer,
-      filters=32,
-      kernel_size=[5, 5],
-      padding="same",
-      activation=tf.nn.relu)
-```
 #### Step 1: define optimizer/solver scopes
 ```python
 with tf.name_scope('adam_optimizer'):
@@ -83,8 +59,7 @@ with tf.name_scope('adam_optimizer'):
 ```python
 # Hook for Large Model Support
 from lms import LMSHook
-lms_hook = LMSHook(optimizer_scopes={'adam_optimizer'},
-	starting_scope='conv1')
+lms_hook = LMSHook(optimizer_scopes={'adam_optimizer'})
 ```
 #### Step 3: add the LMSHook into Estimator's hook list
 ```python
