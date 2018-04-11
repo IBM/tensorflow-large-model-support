@@ -211,13 +211,8 @@ class LMS(object):
                 return
 
         for t in src_op.outputs:
-            if self.n_tensors > 0:
-                if self.ingpu_count > 0:
-                    if (self.ingpu_count + self.incpu_count) >= self.n_tensors:
-                        return  # swap enough
-                else:
-                    if (self.incpu_count) >= self.n_tensors:
-                        return
+            if (self.n_tensors > 0) and (self.incpu_count >= self.n_tensors):
+                return
 
             frontier_ops = set(util.get_consuming_ops(t))
             self.log_info("my frontier ops: {}".format(frontier_ops), 2)
@@ -241,6 +236,7 @@ class LMS(object):
             # create swap_out node
             sample_op = next(iter(bw_frontier_ops))
             swapout_op = self.add_swapout(src_op, sample_op)
+            self.incpu_count = self.incpu_count + 1
 
             # create swap_in nodes
             # TODO: swap_in nodes for branches
