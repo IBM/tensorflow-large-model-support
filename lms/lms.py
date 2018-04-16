@@ -42,6 +42,7 @@ class LMS(object):
                  n_tensors=-1,
                  fuse_swapins=False,
                  ctrld_strategy="chain_rule",
+                 branch_threshold=0,
                  debug=False,
                  debug_level=1,
                  cpu_device="/cpu:0"):
@@ -66,6 +67,7 @@ class LMS(object):
             self.ctrld_strategy = CTRLD_Strategy.DIRECT_ORDER
         else:
             self.ctrld_strategy = "chain_rule"
+        self._branch_threshold = branch_threshold
 
         # Operations with these types will be ignored
         atomic_types = {'Const', 'Mul', 'Add',
@@ -243,6 +245,12 @@ class LMS(object):
                                for op in bw_frontier_ops
                                if ge.get_forward_walk_ops(op, inclusive=False)}
 
+            # swap branch ops if they are far enough (depending on threshold)
+            fw_branch_ops = self._get_branch_ops(src_op,
+                                                 frontier_ops - self.grad_ops,
+                                                 self._branch_threshold)
+            bw_frontier_ops = bw_frontier_ops | fw_branch_ops
+
             if not bw_frontier_ops:
                 continue
 
@@ -304,6 +312,22 @@ class LMS(object):
                 swapin_op = self.add_swapin(swapout_op, src_op, dest_op)
                 # control dependency -> swap_in
                 self.add_ctrld(src_op, dest_op, swapin_op, self.lb, self.ub)
+
+    def _get_branch_ops(self, src_op, within_ops, threshold=0):
+        if threshold > 0:
+            min_order = self.topo_sort.get_order(src_op) + threshold
+        else:
+            orders = {self.topo_sort.get_order(op)
+                      for op in within_ops}
+            if not orders:
+                return set()
+            min_order = min(orders) + 1
+
+        branch_ops = {
+            op
+            for op in within_ops
+            if (self.topo_sort.get_order(op) >= min_order)}
+        return branch_ops
 
     def add_swapout(self, src_op, dest_op):
         ts = ge.filter_ts_from_regex(dest_op, src_op.name)
