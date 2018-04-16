@@ -146,21 +146,20 @@ class LMS(object):
         reachable_ops = set()
         for seed_op in seed_ops:
             reachable_ops |= set(ge.get_forward_walk_ops(seed_op))
-
-        self.fw_reachable_ops = reachable_ops - self.grad_ops
+        reachable_ops = reachable_ops - self.grad_ops
 
         # exclusive ops
         for scope in self.excl_scopes:
             self.excl_ops |= set(ge.get_name_scope_ops(reachable_ops, scope))
         self.excl_ops |= {op
-                          for op in self.fw_reachable_ops
+                          for op in reachable_ops
                           if op.type in self.excl_types}
 
         # inclusive ops
         for scope in self.incl_scopes:
             self.incl_ops |= set(ge.get_name_scope_ops(reachable_ops, scope))
         self.incl_ops |= {op
-                          for op in self.fw_reachable_ops
+                          for op in reachable_ops
                           if op.type in self.incl_types}
 
         # build a topological sort
