@@ -300,7 +300,7 @@ class LMS(object):
             # swap branch ops if they are far enough (depending on threshold)
             if self._swap_branches:
                 fw_branch_ops = self._get_branch_ops(
-                    frontier_ops - self.grad_ops,
+                    frontier_ops - self._grad_ops,
                     self._branch_threshold)
                 bw_frontier_ops = bw_frontier_ops | fw_branch_ops
 
@@ -334,7 +334,7 @@ class LMS(object):
                                              self._lb, self._ub)
 
     def _get_branch_ops(self, within_ops, threshold=0):
-        orders = {self.topo_sort.get_order(op)
+        orders = {self._topo_sort.get_order(op)
                   for op in within_ops}
         if not orders:
             return set()
@@ -342,7 +342,7 @@ class LMS(object):
         branch_ops = {
             op
             for op in within_ops
-            if (self.topo_sort.get_order(op) > min_order)}
+            if (self._topo_sort.get_order(op) > min_order)}
         return branch_ops
 
     def _add_swapout(self, src_op, dest_op):
@@ -398,8 +398,8 @@ class LMS(object):
 
         # if lb is out of range, reset it to make sure
         # that a control dependency op will be found
-        if (self.topo_sort.get_order(bw_op) - lb 
-            <= self.topo_sort.get_order(fw_op)):
+        if (self._topo_sort.get_order(bw_op) - lb 
+            <= self._topo_sort.get_order(fw_op)):
             lb = 1
         if self._ctrld_strategy is CTRLD_Strategy.CHAIN_RULE:
             re = self._do_chain_rule(fw_op, bw_op, lb, ub)
