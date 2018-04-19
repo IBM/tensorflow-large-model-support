@@ -329,7 +329,8 @@ class LMS(object):
             swap_out = tf.identity(ts0)
 
         # Connect: src-node -> swap-out
-        src_out_idx = ge.sgv(src_op, graph=self._graph).output_index(ts0)
+        src_svg = ge.sgv(src_op, graph=self._graph)
+        src_out_idx = src_svg.output_index(ts0)
         self._connect_ops(src_op, swap_out.op, remap_outputs=True,
                           idx=src_out_idx)
         self._excl_ops.add(swap_out.op)
@@ -349,7 +350,8 @@ class LMS(object):
         self._connect_ops(swapout_op, swap_in.op)
 
         # Connect: swap_in -> dest
-        input_idx = ge.sgv(dest_op, graph=self._graph).input_index(ts[0])
+        dest_svg = ge.sgv(dest_op, graph=self._graph)
+        input_idx = dest_svg.input_index(ts[0])
         self._connect_ops(swap_in.op, dest_op, remap_inputs=True, idx=input_idx)
         self._excl_ops.add(swap_in.op)
 
