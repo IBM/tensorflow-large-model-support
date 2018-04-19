@@ -153,7 +153,6 @@ class LMS(object):
         start_time = time.time()
 
         self._build_gradient_ops()
-
         seed_ops = self._get_seed_ops()
 
         self._log_info(
@@ -232,9 +231,9 @@ class LMS(object):
             op for op in bw_frontier_ops
             if self._topo_sort.get_order(op) > 0}
         if fuse_bw_frontier_ops:
-            ts = ge.filter_ts_from_regex(sample_op, src_op.name)
+            ts0 = self._get_intermediate_tensor(src_ops, sample)
             with tf.device(self._cpu_device):
-                swap_in = tf.identity(ts[0])
+                swap_in = tf.identity(ts0)
 
             # Connect: swap_out -> swap_in
             self._connect_ops(swapout_op, swap_in.op)
@@ -242,10 +241,10 @@ class LMS(object):
 
             # reuse swap_in tensors
             for op in fuse_bw_frontier_ops:
-                ts = ge.filter_ts_from_regex(op, src_op.name)
+                ts0 = self._get_intermediate_tensor(src_op, op)
                 # Connect: swap_in -> dest
                 input_idx = ge.sgv(
-                    op, graph=self._graph).input_index(ts[0])
+                    op, graph=self._graph).input_index(ts0)
                 self._connect_ops(swap_in.op, op, remap_inputs=True,
                                   idx=input_idx)
 
@@ -253,7 +252,7 @@ class LMS(object):
                     "{} (order {}) reuses tensor {}".format(
                         op.name,
                         self._topo_sort.get_order(op),
-                        ts[0].name),
+                        ts0.name),
                     1)
 
             # control dependency -> swap_in
@@ -321,9 +320,16 @@ class LMS(object):
                 self._add_control_dependency(src_op, dest_op, swapin_op,
                                              self._lb, self._ub)
 
-    def _add_swapout(self, src_op, dest_op):
+    def _get_intermediate_tensor(self, src_op, dest_op):
         ts = ge.filter_ts_from_regex(dest_op, src_op.name)
-        ts0 = ts[0]
+        ts = [t
+              for t in ts
+              if src_op in util.get_generating_ops(t)]
+        assert(len(ts) == 1)
+        return ts[0]
+
+    def _add_swapout(self, src_op, dest_op):
+        ts0 = self._get_intermediate_tensor(src_op, dest_op)
 
         with tf.device(self._cpu_device):
             swap_out = tf.identity(ts0)
@@ -340,8 +346,7 @@ class LMS(object):
         return swap_out.op
 
     def _add_swapin(self, swapout_op, src_op, dest_op):
-        ts = ge.filter_ts_from_regex(dest_op, src_op.name)
-        ts0 = ts[0]
+        ts0 = self._get_intermediate_tensor(src_op, dest_op)
 
         with tf.device(self._cpu_device):
             swap_in = tf.identity(ts0)
@@ -351,7 +356,7 @@ class LMS(object):
 
         # Connect: swap_in -> dest
         dest_svg = ge.sgv(dest_op, graph=self._graph)
-        input_idx = dest_svg.input_index(ts[0])
+        input_idx = dest_svg.input_index(ts0)
         self._connect_ops(swap_in.op, dest_op, remap_inputs=True, idx=input_idx)
         self._excl_ops.add(swap_in.op)
 
