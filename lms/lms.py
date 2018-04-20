@@ -385,8 +385,7 @@ class LMS(object):
                 src_op.type), 1)
 
             # create swap_out node
-            sample_op = next(iter(bw_frontier_ops))
-            swapout_op = self._add_swapout(src_op, sample_op, t)
+            swapout_op = self._add_swapout(src_op, t)
             self._incpu_count = self._incpu_count + 1
 
             # create swap_in nodes
@@ -396,19 +395,18 @@ class LMS(object):
                     src_op, swapout_op, bw_frontier_ops, t)
             for dest_op in bw_frontier_ops:
                 # swap_in op
-                swapin_op = self._add_swapin(swapout_op, src_op, dest_op, t)
+                swapin_op = self._add_swapin(swapout_op, dest_op, t)
                 # control dependency -> swap_in
                 self._add_control_dependency(src_op, dest_op, swapin_op,
                                              self._lb, self._ub)
 
-    def _add_swapout(self, src_op, dest_op, ts0):
+    def _add_swapout(self, src_op, ts0):
         """Add a swapout operation to the graph.
 
         This method does an in-place modification to the graph.
 
         Args:
           src_op: a `tf.Operation`.
-          dest_op: a `tf.Operation`.
           ts0: a tf.Tensor.
 
         Return:
@@ -428,14 +426,13 @@ class LMS(object):
 
         return swap_out.op
 
-    def _add_swapin(self, swapout_op, src_op, dest_op, ts0):
+    def _add_swapin(self, swapout_op, dest_op, ts0):
         """Add a swapin operation to the graph.
 
         This method does an in-place modification to the graph.
 
         Args:
           swapout_op: a `tf.Operation`.
-          src_op: a `tf.Operation`.
           dest_op: a `tf.Operation`.
           ts0: a tf.Tensor.
 
