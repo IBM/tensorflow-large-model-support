@@ -112,17 +112,16 @@ class LMS(object):
 
             # ordering an operation by how much it covers the other ops
             tmp_dict = {}
-            sorted_list = []
+            max_nelems = -1
             for op in candidates:
                 nelems = len(set(ge.get_forward_walk_ops(op, inclusive=False))
                              & candidates)
                 if nelems > 0:
                     tmp_dict[op] = nelems
-            for key, value in sorted(tmp_dict.items(),
-                                     key=lambda x: x[1]):
-                sorted_list.append(key)
+                    max_nelems = nelems if (nelems > max_nelems) else max_nelems
+
             # seed ops will cover most of the forward ops
-            seed_ops = [sorted_list[-1]]
+            seed_ops = [k for k, v in tmp_dict.items() if v == max_nelems]
         return seed_ops
 
     def _filter_scopes_and_types(self, within_ops, scopes, types):
