@@ -186,6 +186,7 @@ class LMS(object):
         new_reachable_ops = set()
         for seed_op in seed_ops:
             new_reachable_ops |= set(ge.get_forward_walk_ops(seed_op))
+        new_reachable_ops -= self._grad_ops
         if (new_reachable_ops >= reachable_ops):
             self._log_info("Edited model is valid and logically equivalent to the original one")
             self._log_info("Added {} ops into the model".format(len(new_reachable_ops - reachable_ops)))
@@ -226,12 +227,13 @@ class LMS(object):
 
             closed_set.add(src_op)
 
-    def _fuse_swapin_ops(self, bw_frontier_ops):
+    def _fuse_swapin_ops(self, src_op, swapout_op, bw_frontier_ops):
         fuse_bw_frontier_ops = {
             op for op in bw_frontier_ops
             if self._topo_sort.get_order(op) > 0}
-        if fuse_bw_frontier_ops:
-            ts0 = self._get_intermediate_tensor(src_ops, sample)
+        if len(fuse_bw_frontier_ops) >= 2:
+            sample_op = next(iter(fuse_bw_frontier_ops))
+            ts0 = self._get_intermediate_tensor(src_op, sample_op)
             with tf.device(self._cpu_device):
                 swap_in = tf.identity(ts0)
 
@@ -266,8 +268,7 @@ class LMS(object):
             if earliest_op:
                 self._add_control_dependency(src_op, earliest_op, swap_in.op,
                                              self._lb, self._ub)
-            bw_frontier_ops -= fuse_bw_frontier_ops
-        return bw_frontier_ops
+        return (bw_frontier_ops - fuse_bw_frontier_ops)
 
     def _insert_swap_nodes(self, src_op):
         self._log_info("Operation: {}".format(src_op), 2)
@@ -312,7 +313,8 @@ class LMS(object):
             # create swap_in nodes
             # TODO: swap_in nodes for branches
             if self._fuse_swapins:
-                bw_frontier_ops = self._fuse_swapin_ops(bw_frontier_ops)
+                bw_frontier_ops = self._fuse_swapin_ops(
+                    src_op, swapout_op, bw_frontier_ops)
             for dest_op in bw_frontier_ops:
                 # swap_in op
                 swapin_op = self._add_swapin(swapout_op, src_op, dest_op)
@@ -563,7 +565,6 @@ class LMS(object):
         else:
             self._log_info("n_tensors: {}".format(self._n_tensors))
         self._log_info("lb: {}".format(self._lb))
-
 
     def _connect_ops(self, src_op, dest_op, remap_inputs=False,
                      remap_outputs=False, idx=None, disconnect_first=False):
