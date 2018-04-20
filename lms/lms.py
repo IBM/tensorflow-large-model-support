@@ -45,6 +45,36 @@ class LMS(object):
                  debug=False,
                  debug_level=1,
                  cpu_device="/cpu:0"):
+        """Create an LMS object to edit the graph for supporting large model.
+
+        Args:
+          graph: the graph we will modify for LMS. This should be the graph of
+            user-defined neural network.
+          optimizer_scopes: a set of scopes for the optimizers/solvers.
+          starting_scope: tensors that are reachable from the operations in
+            this scope will be swapped for LMS. Set this to the scope of the
+            first layer if we would like to modify the whole graph.
+          excl_scopes: a set of scopes for operations whose tensors will not
+            be swapped out to the host. Default `empty`.
+          incl_scopes: a set of scopes for operations whose tensors will be
+            swapped out to the host. Default `empty`.
+          excl_types: a set of types for operations whose tensors will not be
+            swapped out to the host. Default `empty`.
+          incl_types: a set of types for operations whose tensors will be
+            swapped out to the host. Default `empty`.
+          n_tensors: the number of tensors for LMS, counting from the
+            `starting_scope`. To turn off LMS, set `n_tensors` to `0`.
+            Default `-1` (all reachable tensors will be swapped for LMS).
+          lb: lower-bound value for LMS. A tensor will be swapped in during the
+            backward phase at least `lb` nodes before it in the graph.
+            Default `1`.
+          ub: upper-bound value for LMS. Default `10000`.
+          fuse_swapins: Fuse "close" swap-in operations into one operation.
+            This may improve the performance. Default `False`.
+          debug: debug mode for LMS. Default `False`.
+          debug_level: Debug level for LMS (1 or 2). Default `1`.
+          cpu_device: the device we would like swap tensors to.
+        """
         # TODO, throw an exception here, probably make optimizer_scopes
         # be a positional arg
         if optimizer_scopes is None:
@@ -58,8 +88,8 @@ class LMS(object):
         self._excl_types = excl_types
         self._incl_types = incl_types
         self._starting_scope = starting_scope
-        self._lb = lb  # lowerbound
-        self._ub = ub  # upperbound
+        self._lb = lb
+        self._ub = ub
         self._n_tensors = n_tensors
         self._fuse_swapins = fuse_swapins
         if ctrld_strategy == "chain_rule":
@@ -87,12 +117,22 @@ class LMS(object):
         self._incpu_count = 0
 
     def _build_gradient_ops(self):
+        """Return a set of operations in the backward phase.
+
+        Operations in the backward phase are determined by its scope.
+        """
         for scope in self._optimizer_scopes:
             self._grad_ops.update(
                 set(ge.filter_ops_from_regex(
                     ge.make_list_of_op(self._graph), "^{}".format(scope))))
 
     def _get_seed_ops(self):
+        """Return a list of `tf.Operation` used as a starting point for LMS
+        to traverse the graph.
+
+        If a starting scope is given, the ops in this scope will be used.
+        Otherwise, this method automatically searches for starting ops.
+        """
         # seep ops for search
         seed_ops = None
         if self._starting_scope is not None:
@@ -125,6 +165,15 @@ class LMS(object):
         return seed_ops
 
     def _filter_scopes_and_types(self, within_ops, scopes, types):
+        """Filter out ops that are not in `scopes` and not of `types`.
+
+        Args:
+          within_ops: an object convertible to a list of `tf.Operation`.
+          scopes: a list of scope path.
+          types: a list of tf.DataType.
+        Return:
+          A set of `tf.Operation`.
+        """
         ops = set()
         for scope in scopes:
             ops |= set(ge.get_name_scope_ops(within_ops, scope))
@@ -134,6 +183,15 @@ class LMS(object):
         return ops
 
     def run(self, graph=None):
+        """Edit the graph by adding swapin and swapout ops.
+
+        Swapin and swapout ops are in the host.
+
+        The graph is modified in-place.
+
+        Return:
+          a set of added ops.
+        """
         if graph is not None:
             self._graph = graph
 
@@ -199,7 +257,12 @@ class LMS(object):
                 self._incpu_count))
         return (new_reachable_ops - reachable_ops)
 
-    def _do_action(self, src_ops):  # BFS
+    def _do_action(self, src_ops):
+        """Add swapin and swapout ops for ops that are reachable from `src_ops`.
+
+        Args:
+          src_ops: a list of `tf.Operation`
+        """
         open_set = Queue.Queue()
         closed_set = set()
 
@@ -227,6 +290,19 @@ class LMS(object):
             closed_set.add(src_op)
 
     def _fuse_swapin_ops(self, src_op, swapout_op, bw_frontier_ops, ts0):
+        """Fuse all swapin ops that swaps in the same tensor.
+
+        This method does an in-place modification to the graph.
+
+        Args:
+          src_op: a `tf.Operation`.
+          swapout_op: a `tf.Operation`.
+          bw_frontier_ops: a set of `tf.Operation`.
+          ts0: a tf.Tensor.
+
+        Return:
+          A set of `tf.Operation` that cannot be fused.
+        """
         fuse_bw_frontier_ops = {
             op for op in bw_frontier_ops
             if self._topo_sort.get_order(op) > 0}
@@ -267,6 +343,13 @@ class LMS(object):
         return (bw_frontier_ops - fuse_bw_frontier_ops)
 
     def _insert_swap_nodes(self, src_op):
+        """Insert swapin and swapout ops for the given operation into the graph.
+
+        This method does an in-place modification to the graph.
+
+        Args:
+          src_op: a `tf.Operation`
+        """
         self._log_info("Operation: {}".format(src_op), 2)
 
         # bypass excluded ops
@@ -319,6 +402,18 @@ class LMS(object):
                                              self._lb, self._ub)
 
     def _add_swapout(self, src_op, dest_op, ts0):
+        """Add a swapout operation to the graph.
+
+        This method does an in-place modification to the graph.
+
+        Args:
+          src_op: a `tf.Operation`.
+          dest_op: a `tf.Operation`.
+          ts0: a tf.Tensor.
+
+        Return:
+          A `tf.Operation`.
+        """
         with tf.device(self._cpu_device):
             swap_out = tf.identity(ts0)
 
@@ -334,6 +429,19 @@ class LMS(object):
         return swap_out.op
 
     def _add_swapin(self, swapout_op, src_op, dest_op, ts0):
+        """Add a swapin operation to the graph.
+
+        This method does an in-place modification to the graph.
+
+        Args:
+          swapout_op: a `tf.Operation`.
+          src_op: a `tf.Operation`.
+          dest_op: a `tf.Operation`.
+          ts0: a tf.Tensor.
+
+        Return:
+          A `tf.Operation`.
+        """
         with tf.device(self._cpu_device):
             swap_in = tf.identity(ts0)
 
@@ -353,6 +461,17 @@ class LMS(object):
         return swap_in.op
 
     def _add_control_dependency(self, fw_op, bw_op, swapin_op, lb, ub):
+        """Find and add a control dependency to the graph.
+
+        This method does an in-place modification to the graph.
+
+        Args:
+          fw_op: a `tf.Operation`.
+          bw_op: a `tf.Operation`.
+          swapin_op: a `tf.Operation`.
+          lb: an `integer`.
+          up: an `integer`.
+        """
         if self._topo_sort.get_order(bw_op) < 0:
             nco = self._find_nco(fw_op, bw_op)
             if nco:
@@ -383,8 +502,15 @@ class LMS(object):
             self._log_info("No control dependency op", 1)
 
     def _find_nco(self, fw_op, bw_op):
-        '''Find the nearest common ops in reachable ops of two given ops
-        '''
+        """Find the nearest common ops in reachable ops of two given ops.
+
+        Args:
+          fw_op: a `tf.Operation`.
+          bw_op: a `tf.Operation`.
+
+        Return:
+          A set of `tf.Operation`.
+        """
         frontier_ops = set()
         for t in fw_op.outputs:
             frontier_ops |= set(util.get_consuming_ops(t))
@@ -407,6 +533,14 @@ class LMS(object):
         return nco_op
 
     def _find_inscope(self, scope):
+        """Find the closest ops that are backward ops by expanding from the scope.
+
+        Args:
+          scope: a scope path.
+
+        Return:
+          A set of `tf.Operation`.
+        """
         current_scope = scope
         higher_scope = current_scope.rsplit('/', 1)[0]
 
@@ -442,9 +576,18 @@ class LMS(object):
                 return earliest_op
 
     def _do_chain_rule(self, fw_op, bw_op, lower_b, upper_b):  # BFS
-        '''Find a control dependency operation using chain rules.
-        Go down along the forward phase to find corresponding bw ops
-        '''
+        """Find a control dependency operation using chain rules.
+        Go down along the forward phase to find corresponding bw ops.
+
+        Args:
+          fw_op: a `tf.Operation`.
+          bw_op: a `tf.Operation`.
+          lower_b: an `integer`.
+          upper_b: an `integer`.
+
+        Return:
+          A tuple of (`tf.Operation`, an `integer`).
+        """
         fw_order = self._topo_sort.get_order(fw_op)
         bw_order = self._topo_sort.get_order(bw_op)
 
@@ -508,8 +651,17 @@ class LMS(object):
             return (None, -1)
 
     def _do_direct_order(self, fw_op, src_op, lower_b, upper_b):
-        '''Find a control dependency operation using topological sort
-        '''
+        """Find a control dependency operation using topological sort.
+
+        Args:
+          fw_op: a `tf.Operation`.
+          bw_op: a `tf.Operation`.
+          lower_b: an `integer`.
+          upper_b: an `integer`.
+
+        Return:
+          A tuple of (`tf.Operation`, `integer`).
+        """
         result_ops = set()
 
         # offset ordering
@@ -538,12 +690,20 @@ class LMS(object):
             return (None, -1)
 
     def _log_info(self, message, level=0):
+        """Log debug information.
+
+        Args:
+          message: a formatted string.
+          level: an `integer`.
+        """
         if level == 0 or (self._debug and self._debug_level >= level):
             # Use tf.logging.info instead of print, since print
             # is not thread safe, which can break tests.
             tf.logging.info("[LMS][{}] {}".format(level, message))
 
     def _print_configuration(self):
+        """Print configuration information about LMS.
+        """
         if self._n_tensors == 0:
             self._log_info("n_tensors: all tensors")
         else:
@@ -552,6 +712,19 @@ class LMS(object):
 
     def _connect_ops(self, src_op, dest_op, remap_inputs=False,
                      remap_outputs=False, idx=None, disconnect_first=False):
+        """A wrapper of `tensorflow.contrib.graph_editor.connect`.
+
+        This method does an in-place modification to the graph.
+
+        Args:
+          src_op: a `tf.Operation`.
+          dest_op: a `tf.Operation`.
+          remap_inputs: remap the input of `dest_op` or not.
+          remap_outputs: remap the output of `src_op` or not.
+          idx: index of input or output tensor.
+          disconnect_first: True means the current outputs of sgv0 are
+            disconnected.
+        """
         src_sgv = ge.sgv(src_op, graph=self._graph)
         dest_sgv = ge.sgv(dest_op, graph=self._graph)
         if remap_outputs:
