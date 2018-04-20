@@ -117,17 +117,16 @@ class LMS(object):
 
             # ordering an operation by how much it covers the other ops
             tmp_dict = {}
-            sorted_list = []
+            max_nelems = -1
             for op in candidates:
                 nelems = len(set(ge.get_forward_walk_ops(op, inclusive=False))
                              & candidates)
                 if nelems > 0:
                     tmp_dict[op] = nelems
-            for key, value in sorted(tmp_dict.items(),
-                                     key=lambda x: x[1]):
-                sorted_list.append(key)
+                    max_nelems = nelems if (nelems > max_nelems) else max_nelems
+
             # seed ops will cover most of the forward ops
-            seed_ops = [sorted_list[-1]]
+            seed_ops = [k for k, v in tmp_dict.items() if v == max_nelems]
         return seed_ops
 
     def _filter_scopes_and_types(self, within_ops, scopes, types):
@@ -191,6 +190,7 @@ class LMS(object):
         new_reachable_ops = set()
         for seed_op in seed_ops:
             new_reachable_ops |= set(ge.get_forward_walk_ops(seed_op))
+        new_reachable_ops -= self._grad_ops
         if (new_reachable_ops >= reachable_ops):
             self._log_info("Edited model is valid and logically equivalent to the original one")
             self._log_info("Added {} ops into the model".format(len(new_reachable_ops - reachable_ops)))
@@ -231,12 +231,11 @@ class LMS(object):
 
             closed_set.add(src_op)
 
-    def _fuse_swapin_ops(self, bw_frontier_ops):
+    def _fuse_swapin_ops(self, src_op, swapout_op, bw_frontier_ops, ts0):
         fuse_bw_frontier_ops = {
             op for op in bw_frontier_ops
             if self._topo_sort.get_order(op) > 0}
-        if fuse_bw_frontier_ops:
-            ts0 = self._get_intermediate_tensor(src_ops, sample)
+        if len(fuse_bw_frontier_ops) >= 2:
             with tf.device(self._cpu_device):
                 swap_in = tf.identity(ts0)
 
@@ -246,7 +245,6 @@ class LMS(object):
 
             # reuse swap_in tensors
             for op in fuse_bw_frontier_ops:
-                ts0 = self._get_intermediate_tensor(src_op, op)
                 # Connect: swap_in -> dest
                 input_idx = ge.sgv(
                     op, graph=self._graph).input_index(ts0)
@@ -271,8 +269,7 @@ class LMS(object):
             if earliest_op:
                 self._add_control_dependency(src_op, earliest_op, swap_in.op,
                                              self._lb, self._ub)
-            bw_frontier_ops -= fuse_bw_frontier_ops
-        return bw_frontier_ops
+        return (bw_frontier_ops - fuse_bw_frontier_ops)
 
     def _insert_swap_nodes(self, src_op):
         self._log_info("Operation: {}".format(src_op), 2)
@@ -318,16 +315,17 @@ class LMS(object):
 
             # create swap_out node
             sample_op = next(iter(bw_frontier_ops))
-            swapout_op = self._add_swapout(src_op, sample_op)
+            swapout_op = self._add_swapout(src_op, sample_op, t)
             self._incpu_count = self._incpu_count + 1
 
             # create swap_in nodes
             # TODO: swap_in nodes for branches
             if self._fuse_swapins:
-                bw_frontier_ops = self._fuse_swapin_ops(bw_frontier_ops)
+                bw_frontier_ops = self._fuse_swapin_ops(
+                    src_op, swapout_op, bw_frontier_ops, t)
             for dest_op in bw_frontier_ops:
                 # swap_in op
-                swapin_op = self._add_swapin(swapout_op, src_op, dest_op)
+                swapin_op = self._add_swapin(swapout_op, src_op, dest_op, t)
                 # control dependency -> swap_in
                 self._add_control_dependency(src_op, dest_op, swapin_op,
                                              self._lb, self._ub)
@@ -344,17 +342,7 @@ class LMS(object):
             if (self._topo_sort.get_order(op) > min_order)}
         return branch_ops
 
-    def _get_intermediate_tensor(self, src_op, dest_op):
-        ts = ge.filter_ts_from_regex(dest_op, src_op.name)
-        ts = [t
-              for t in ts
-              if src_op in util.get_generating_ops(t)]
-        assert(len(ts) == 1)
-        return ts[0]
-
-    def _add_swapout(self, src_op, dest_op):
-        ts0 = self._get_intermediate_tensor(src_op, dest_op)
-
+    def _add_swapout(self, src_op, dest_op, ts0):
         with tf.device(self._cpu_device):
             swap_out = tf.identity(ts0)
 
@@ -369,9 +357,7 @@ class LMS(object):
 
         return swap_out.op
 
-    def _add_swapin(self, swapout_op, src_op, dest_op):
-        ts0 = self._get_intermediate_tensor(src_op, dest_op)
-
+    def _add_swapin(self, swapout_op, src_op, dest_op, ts0):
         with tf.device(self._cpu_device):
             swap_in = tf.identity(ts0)
 
@@ -592,7 +578,6 @@ class LMS(object):
         else:
             self._log_info("n_tensors: {}".format(self._n_tensors))
         self._log_info("lb: {}".format(self._lb))
-
 
     def _connect_ops(self, src_op, dest_op, remap_inputs=False,
                      remap_outputs=False, idx=None, disconnect_first=False):
