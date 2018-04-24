@@ -42,6 +42,8 @@ class LMS(object):
                  n_tensors=-1,
                  fuse_swapins=False,
                  ctrld_strategy="chain_rule",
+                 swap_branches=False,
+                 branch_threshold=0,
                  debug=False,
                  debug_level=1,
                  cpu_device="/cpu:0"):
@@ -68,6 +70,9 @@ class LMS(object):
             self._ctrld_strategy = CTRLD_Strategy.DIRECT_ORDER
         else:
             self._ctrld_strategy = "chain_rule"
+
+        self._swap_branches = swap_branches
+        self._branch_threshold = branch_threshold
 
         # Operations with these types will be ignored
         atomic_types = {'Const', 'Mul', 'Add',
@@ -288,6 +293,13 @@ class LMS(object):
             bw_frontier_ops = frontier_ops & self._grad_ops
             self._log_info("my bw frontier ops: {}".format(bw_frontier_ops), 2)
 
+            # swap branch ops if they are far enough (depending on threshold)
+            if self._swap_branches:
+                fw_branch_ops = self._get_branch_ops(
+                    frontier_ops - self._grad_ops,
+                    self._branch_threshold)
+                bw_frontier_ops = bw_frontier_ops | fw_branch_ops
+
             # Do not swap tensors used by bw ops without outgoing ops.
             # These bw ops can be removed by Tensorflow compiler
             bw_frontier_ops = {op
@@ -306,7 +318,6 @@ class LMS(object):
             self._incpu_count = self._incpu_count + 1
 
             # create swap_in nodes
-            # TODO: swap_in nodes for branches
             if self._fuse_swapins:
                 bw_frontier_ops = self._fuse_swapin_ops(
                     src_op, swapout_op, bw_frontier_ops, t)
@@ -316,6 +327,18 @@ class LMS(object):
                 # control dependency -> swap_in
                 self._add_control_dependency(src_op, dest_op, swapin_op,
                                              self._lb, self._ub)
+
+    def _get_branch_ops(self, within_ops, threshold=0):
+        orders = {self._topo_sort.get_order(op)
+                  for op in within_ops}
+        if not orders:
+            return set()
+        min_order = min(orders) + threshold
+        branch_ops = {
+            op
+            for op in within_ops
+            if (self._topo_sort.get_order(op) > min_order)}
+        return branch_ops
 
     def _add_swapout(self, src_op, ts0):
         with tf.device(self._cpu_device):
@@ -364,6 +387,11 @@ class LMS(object):
                     self._log_info("No control dependency op", 1)
                     return
 
+        # if lb is out of range, reset it to make sure
+        # that a control dependency op will be found
+        if (self._topo_sort.get_order(bw_op) - lb 
+            <= self._topo_sort.get_order(fw_op)):
+            lb = 1
         if self._ctrld_strategy is CTRLD_Strategy.CHAIN_RULE:
             re = self._do_chain_rule(fw_op, bw_op, lb, ub)
         elif self._ctrld_strategy is CTRLD_Strategy.DIRECT_ORDER:

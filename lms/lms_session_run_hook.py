@@ -17,6 +17,8 @@ class LMSHook(session_run_hook.SessionRunHook):
                  n_tensors=-1,
                  fuse_swapins=False,
                  ctrld_strategy="chain_rule",
+                 swap_branches=False,
+                 branch_threshold=0,
                  debug=False,
                  debug_level=1,
                  cpu_device="/cpu:0"):
@@ -30,6 +32,8 @@ class LMSHook(session_run_hook.SessionRunHook):
                            n_tensors=n_tensors,
                            fuse_swapins=fuse_swapins,
                            ctrld_strategy=ctrld_strategy,
+                           swap_branches=swap_branches,
+                           branch_threshold=branch_threshold,
                            debug=debug,
                            debug_level=debug_level,
                            cpu_device=cpu_device)
