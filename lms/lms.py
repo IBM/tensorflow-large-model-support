@@ -77,7 +77,7 @@ class LMS(object):
         # Operations with these types will be ignored
         atomic_types = {'Const', 'Mul', 'Add',
                         'Identity', 'Assign', 'VariableV2',
-                        'Reshape', 'Shape', 'ShapeN'}
+                        'Reshape', 'Shape', 'ShapeN', 'Placeholder'}
         self._excl_types |= atomic_types
 
         self._excl_ops = set()
