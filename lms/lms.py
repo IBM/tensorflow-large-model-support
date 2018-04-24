@@ -318,7 +318,6 @@ class LMS(object):
             self._incpu_count = self._incpu_count + 1
 
             # create swap_in nodes
-            # TODO: swap_in nodes for branches
             if self._fuse_swapins:
                 bw_frontier_ops = self._fuse_swapin_ops(
                     src_op, swapout_op, bw_frontier_ops, t)
