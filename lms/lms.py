@@ -198,7 +198,7 @@ class LMS(object):
             self._log_info("Edited model is invalid. Running this may produce unexpected result")
 
         self._log_info("Editing model for LMS, took: {} ms".format(
-            (time.time()-start_time)/1000))
+            (time.time()-start_time)*1000))
         self._log_info(
             "{} tensors will be swapped out(in) to(from) the host".format(
                 self._incpu_count))
