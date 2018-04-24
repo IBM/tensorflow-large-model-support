@@ -91,6 +91,9 @@ class LMS(object):
         # keep log of tensors on host
         self._incpu_count = 0
 
+        # store a dictionary of visited ops to avoid multiple visits
+        self._ops_dict = {}
+
     def _build_gradient_ops(self):
         for scope in self._optimizer_scopes:
             self._grad_ops.update(
@@ -119,7 +122,7 @@ class LMS(object):
             tmp_dict = {}
             max_nelems = -1
             for op in candidates:
-                nelems = len(set(ge.get_forward_walk_ops(op, inclusive=False))
+                nelems = len((self._get_forward_walk_ops(op) - {op})
                              & candidates)
                 if nelems > 0:
                     tmp_dict[op] = nelems
@@ -137,6 +140,14 @@ class LMS(object):
                 for op in within_ops
                 if op.type in types}
         return ops
+
+    def _get_forward_walk_ops(self, op):
+        if op in self._ops_dict:
+            return self._ops_dict[op]
+        else:
+            ret = set(ge.get_forward_walk_ops(op))
+            self._ops_dict[op] = ret
+            return ret
 
     def run(self, graph=None):
         if graph is not None:
@@ -165,7 +176,7 @@ class LMS(object):
 
         reachable_ops = set()
         for seed_op in seed_ops:
-            reachable_ops |= set(ge.get_forward_walk_ops(seed_op))
+            reachable_ops |= self._get_forward_walk_ops(seed_op)
         reachable_ops -= self._grad_ops
 
         # exclusive ops
@@ -198,7 +209,7 @@ class LMS(object):
             self._log_info("Edited model is invalid. Running this may produce unexpected result")
 
         self._log_info("Editing model for LMS, took: {} ms".format(
-            (time.time()-start_time)/1000))
+            (time.time()-start_time)*1000))
         self._log_info(
             "{} tensors will be swapped out(in) to(from) the host".format(
                 self._incpu_count))
@@ -304,7 +315,7 @@ class LMS(object):
             # These bw ops can be removed by Tensorflow compiler
             bw_frontier_ops = {op
                                for op in bw_frontier_ops
-                               if ge.get_forward_walk_ops(op, inclusive=False)}
+                               if op.outputs}
 
             if not bw_frontier_ops:
                 continue
@@ -418,9 +429,9 @@ class LMS(object):
         frontier_ops -= self._grad_ops
         fw_reachable_ops = {op2
                             for op1 in frontier_ops
-                            for op2 in set(ge.get_forward_walk_ops(op1))}
+                            for op2 in self._get_forward_walk_ops(op1)}
 
-        bw_reachable_ops = set(ge.get_forward_walk_ops(bw_op, inclusive=False))
+        bw_reachable_ops = self._get_forward_walk_ops(bw_op) - {bw_op}
         common_ops = fw_reachable_ops & bw_reachable_ops
         min_order = self._topo_sort.size + 1
         nco_op = None
@@ -552,7 +563,7 @@ class LMS(object):
             # on the chain rule path
             candidates = {op
                           for op in candidates
-                          if src_op in ge.get_forward_walk_ops(op)}
+                          if src_op in self._get_forward_walk_ops(op)}
             if candidates:
                 result_ops |= candidates
                 ctrld_order = i
