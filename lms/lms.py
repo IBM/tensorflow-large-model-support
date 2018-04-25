@@ -334,7 +334,7 @@ class LMS(object):
             # These bw ops can be removed by Tensorflow compiler
             bw_frontier_ops = {op
                                for op in bw_frontier_ops
-                               if set(self._get_forward_walk_ops(op, inclusive=False))}
+                               if op.outputs}
 
             if not bw_frontier_ops:
                 continue
