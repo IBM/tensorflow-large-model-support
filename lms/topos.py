@@ -11,6 +11,7 @@ class TOPOS(object):
         self._grad_ops = grad_ops
 
         self._topo_sort = {}
+        self._orders = {}
         self._bw_starting_order = -1
 
     def build(self):
@@ -26,6 +27,9 @@ class TOPOS(object):
         # then remove them, and do reordering
         self._clean_update_ops()
         self._reindex()
+
+        # build a dict of (op, order)
+        self._build_order_dict()
 
         # starting order of the backward phase
         for i in range(0, len(self._topo_sort)):
@@ -69,6 +73,11 @@ class TOPOS(object):
 
         return dep_dict
 
+    def _build_order_dict(self):
+        for order, dep_ops in self._topo_sort.items():
+            for op in dep_ops:
+                self._orders[op] = order
+
     def _clean_bw_ops(self):
         '''There are some bw ops that
              - have no incoming bw ops except its fw op, or
@@ -109,12 +118,10 @@ class TOPOS(object):
         self._topo_sort = topo_sort
 
     def get_order(self, op):
-        result = -1
-        for order, dep_ops in self._topo_sort.items():
-            if op in dep_ops:
-                result = order
-                break
-        return result
+        if op in self._orders:
+            return self._orders[op]
+        else:
+            return -1
 
     def get_ops(self, order):
         return self._topo_sort[order]
