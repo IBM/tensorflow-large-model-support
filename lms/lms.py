@@ -366,6 +366,16 @@ class LMS(object):
         return (bw_frontier_ops - fuse_bw_frontier_ops)
 
     def _get_branch_ops(self, within_ops, threshold=0):
+        """Get ops whose order compared to the minimum order
+        is greater than the threshold.
+
+        Args:
+          within_ops: a set of `tf.Operation`.
+          threshold: an integer.
+
+        Return:
+          A set of `tf.Operation`.
+        """
         orders = {self._topo_sort.get_order(op)
                   for op in within_ops}
         if not orders:
