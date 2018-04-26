@@ -42,6 +42,8 @@ class LMS(object):
                  n_tensors=-1,
                  fuse_swapins=False,
                  ctrld_strategy="chain_rule",
+                 swap_branches=False,
+                 branch_threshold=0,
                  debug=False,
                  debug_level=1,
                  cpu_device="/cpu:0"):
@@ -77,7 +79,7 @@ class LMS(object):
         """
         # TODO, throw an exception here, probably make optimizer_scopes
         # be a positional arg
-        if optimizer_scopes is None:
+        if not optimizer_scopes:
             self._log_info("set the optimizer scope")
             return
 
@@ -99,10 +101,13 @@ class LMS(object):
         else:
             self._ctrld_strategy = "chain_rule"
 
+        self._swap_branches = swap_branches
+        self._branch_threshold = branch_threshold
+
         # Operations with these types will be ignored
         atomic_types = {'Const', 'Mul', 'Add',
                         'Identity', 'Assign', 'VariableV2',
-                        'Reshape', 'Shape', 'ShapeN'}
+                        'Reshape', 'Shape', 'ShapeN', 'Placeholder'}
         self._excl_types |= atomic_types
 
         self._excl_ops = set()
@@ -115,6 +120,9 @@ class LMS(object):
 
         # keep log of tensors on host
         self._incpu_count = 0
+
+        # store a dictionary of visited ops to avoid multiple visits
+        self._ops_dict = {}
 
     def _build_gradient_ops(self):
         """Return a set of operations in the backward phase.
@@ -135,7 +143,7 @@ class LMS(object):
         """
         # seep ops for search
         seed_ops = None
-        if self._starting_scope is not None:
+        if self._starting_scope:
             seed_ops = ge.filter_ops_from_regex(
                 ge.make_list_of_op(self._graph), "^{}".format(
                     self._starting_scope))
@@ -154,7 +162,8 @@ class LMS(object):
             tmp_dict = {}
             max_nelems = -1
             for op in candidates:
-                nelems = len(set(ge.get_forward_walk_ops(op, inclusive=False))
+                nelems = len(set(self._get_forward_walk_ops(op,
+                                                            inclusive=False))
                              & candidates)
                 if nelems > 0:
                     tmp_dict[op] = nelems
@@ -182,6 +191,20 @@ class LMS(object):
                 if op.type in types}
         return ops
 
+    def _get_forward_walk_ops(self, op, inclusive=True):
+        if op in self._ops_dict:
+            if inclusive:
+                return self._ops_dict[op]
+            else:
+                return list(set(self._ops_dict[op]) - {op})
+        else:
+            ret = ge.get_forward_walk_ops(op)
+            self._ops_dict[op] = ret
+            if inclusive:
+                return ret
+            else:
+                return list(set(ret) - {op})
+
     def run(self, graph=None):
         """Edit the graph by adding swapin and swapout ops.
 
@@ -192,10 +215,10 @@ class LMS(object):
         Return:
           a set of added ops.
         """
-        if graph is not None:
+        if graph:
             self._graph = graph
 
-        if self._graph is None:
+        if not self._graph:
             self._log_info("Input graph: Not found")
             return
 
@@ -218,7 +241,7 @@ class LMS(object):
 
         reachable_ops = set()
         for seed_op in seed_ops:
-            reachable_ops |= set(ge.get_forward_walk_ops(seed_op))
+            reachable_ops |= set(self._get_forward_walk_ops(seed_op))
         reachable_ops -= self._grad_ops
 
         # exclusive ops
@@ -251,7 +274,7 @@ class LMS(object):
             self._log_info("Edited model is invalid. Running this may produce unexpected result")
 
         self._log_info("Editing model for LMS, took: {} ms".format(
-            (time.time()-start_time)/1000))
+            (time.time()-start_time)*1000))
         self._log_info(
             "{} tensors will be swapped out(in) to(from) the host".format(
                 self._incpu_count))
@@ -342,6 +365,18 @@ class LMS(object):
                                              self._lb, self._ub)
         return (bw_frontier_ops - fuse_bw_frontier_ops)
 
+    def _get_branch_ops(self, within_ops, threshold=0):
+        orders = {self._topo_sort.get_order(op)
+                  for op in within_ops}
+        if not orders:
+            return set()
+        min_order = min(orders) + threshold
+        branch_ops = {
+            op
+            for op in within_ops
+            if (self._topo_sort.get_order(op) > min_order)}
+        return branch_ops
+
     def _insert_swap_nodes(self, src_op):
         """Insert swapin and swapout ops for the given operation into the graph.
 
@@ -371,11 +406,18 @@ class LMS(object):
             bw_frontier_ops = frontier_ops & self._grad_ops
             self._log_info("my bw frontier ops: {}".format(bw_frontier_ops), 2)
 
+            # swap branch ops if they are far enough (depending on threshold)
+            if self._swap_branches:
+                fw_branch_ops = self._get_branch_ops(
+                    frontier_ops - self._grad_ops,
+                    self._branch_threshold)
+                bw_frontier_ops = bw_frontier_ops | fw_branch_ops
+
             # Do not swap tensors used by bw ops without outgoing ops.
             # These bw ops can be removed by Tensorflow compiler
             bw_frontier_ops = {op
                                for op in bw_frontier_ops
-                               if ge.get_forward_walk_ops(op, inclusive=False)}
+                               if op.outputs}
 
             if not bw_frontier_ops:
                 continue
@@ -385,23 +427,21 @@ class LMS(object):
                 src_op.type), 1)
 
             # create swap_out node
-            sample_op = next(iter(bw_frontier_ops))
-            swapout_op = self._add_swapout(src_op, sample_op, t)
+            swapout_op = self._add_swapout(src_op, t)
             self._incpu_count = self._incpu_count + 1
 
             # create swap_in nodes
-            # TODO: swap_in nodes for branches
             if self._fuse_swapins:
                 bw_frontier_ops = self._fuse_swapin_ops(
                     src_op, swapout_op, bw_frontier_ops, t)
             for dest_op in bw_frontier_ops:
                 # swap_in op
-                swapin_op = self._add_swapin(swapout_op, src_op, dest_op, t)
+                swapin_op = self._add_swapin(swapout_op, dest_op, t)
                 # control dependency -> swap_in
                 self._add_control_dependency(src_op, dest_op, swapin_op,
                                              self._lb, self._ub)
 
-    def _add_swapout(self, src_op, dest_op, ts0):
+    def _add_swapout(self, src_op, ts0):
         """Add a swapout operation to the graph.
 
         This method does an in-place modification to the graph.
@@ -428,7 +468,7 @@ class LMS(object):
 
         return swap_out.op
 
-    def _add_swapin(self, swapout_op, src_op, dest_op, ts0):
+    def _add_swapin(self, swapout_op, dest_op, ts0):
         """Add a swapin operation to the graph.
 
         This method does an in-place modification to the graph.
@@ -484,6 +524,11 @@ class LMS(object):
                     self._log_info("No control dependency op", 1)
                     return
 
+        # if lb is out of range, reset it to make sure
+        # that a control dependency op will be found
+        if (self._topo_sort.get_order(bw_op) - lb
+            <= self._topo_sort.get_order(fw_op)):
+            lb = 1
         if self._ctrld_strategy is CTRLD_Strategy.CHAIN_RULE:
             re = self._do_chain_rule(fw_op, bw_op, lb, ub)
         elif self._ctrld_strategy is CTRLD_Strategy.DIRECT_ORDER:
@@ -517,9 +562,10 @@ class LMS(object):
         frontier_ops -= self._grad_ops
         fw_reachable_ops = {op2
                             for op1 in frontier_ops
-                            for op2 in set(ge.get_forward_walk_ops(op1))}
+                            for op2 in set(self._get_forward_walk_ops(op1))}
 
-        bw_reachable_ops = set(ge.get_forward_walk_ops(bw_op, inclusive=False))
+        bw_reachable_ops = set(self._get_forward_walk_ops(
+            bw_op, inclusive=False))
         common_ops = fw_reachable_ops & bw_reachable_ops
         min_order = self._topo_sort.size + 1
         nco_op = None
@@ -677,7 +723,7 @@ class LMS(object):
             # on the chain rule path
             candidates = {op
                           for op in candidates
-                          if src_op in ge.get_forward_walk_ops(op)}
+                          if src_op in set(self._get_forward_walk_ops(op))}
             if candidates:
                 result_ops |= candidates
                 ctrld_order = i

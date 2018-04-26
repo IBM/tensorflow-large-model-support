@@ -155,6 +155,7 @@ def main(_):
   from lms import LMS
   lms_model = LMS(optimizer_scopes={'adam_optimizer'},
                   excl_scopes = {'loss', 'accuracy', 'dropout'},
+                  fuse_swapins=True,
                   lb=3)
   lms_model.run(tf.get_default_graph())
 
