@@ -354,7 +354,6 @@ class LMS(object):
             for dest_op in bw_frontier_ops:
                 if self._topo_sort.get_order(dest_op) < 0:
                     new_src_ops = self._find_new_src_op(dest_op)
-                    self._log_info("new ops:{}".format([op.name for op in new_src_ops]))
                     for op in new_src_ops:
                         self._insert_swap_nodes(op)
                 else:
@@ -404,7 +403,10 @@ class LMS(object):
         if (self._topo_sort.get_order(bw_op) - lb
             <= self._topo_sort.get_order(fw_op)):
             lb = 1
-        if self._ctrld_strategy is CTRLD_Strategy.CHAIN_RULE:
+        
+        if fw_op in self._grad_ops:
+            re = self._do_direct_order(fw_op, bw_op, lb, ub)
+        elif self._ctrld_strategy is CTRLD_Strategy.CHAIN_RULE:
             re = self._do_chain_rule(fw_op, bw_op, lb, ub)
         elif self._ctrld_strategy is CTRLD_Strategy.DIRECT_ORDER:
             re = self._do_direct_order(fw_op, bw_op, lb, ub)
