@@ -321,7 +321,7 @@ class LMS(object):
           src_op: a `tf.Operation`.
           swapout_op: a `tf.Operation`.
           bw_frontier_ops: a set of `tf.Operation`.
-          ts0: a tf.Tensor.
+          ts0: a `tf.Tensor`.
 
         Return:
           A set of `tf.Operation` that cannot be fused.
@@ -448,8 +448,7 @@ class LMS(object):
 
         Args:
           src_op: a `tf.Operation`.
-          dest_op: a `tf.Operation`.
-          ts0: a tf.Tensor.
+          ts0: a `tf.Tensor`.
 
         Return:
           A `tf.Operation`.
@@ -475,9 +474,8 @@ class LMS(object):
 
         Args:
           swapout_op: a `tf.Operation`.
-          src_op: a `tf.Operation`.
           dest_op: a `tf.Operation`.
-          ts0: a tf.Tensor.
+          ts0: a `tf.Tensor`.
 
         Return:
           A `tf.Operation`.
