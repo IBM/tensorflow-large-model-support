@@ -31,7 +31,6 @@ class LMS(object):
     operations on the host. In theory, this procedure does not have any
     effect on the training convergence as well as inference task.
     """
-
     def __init__(self, graph=None, optimizer_scopes=set(),
                  starting_scope=None,
                  excl_scopes=set(),

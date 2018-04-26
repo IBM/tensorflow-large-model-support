@@ -1,3 +1,5 @@
+"""TOPOS
+"""
 from six.moves import queue as Queue
 from toposort import toposort as tps
 
@@ -6,7 +8,15 @@ from tensorflow.contrib.graph_editor import util
 
 
 class TOPOS(object):
+    """TOPOS class builds a topological order from the computational graph.
+    """
     def __init__(self, seed_ops, grad_ops):
+        """Create a TOPOS object.
+
+        Args:
+          seed_ops: a list of `tf.Operation`.
+          grad_ops: a set of `tf.Operation`.
+        """
         self._seed_ops = seed_ops
         self._grad_ops = grad_ops
 
@@ -15,6 +25,8 @@ class TOPOS(object):
         self._bw_starting_order = -1
 
     def build(self):
+        """Build a topological order
+        """
         topo_sort = list(tps(self._build_dependency_dict()))
         for i in range(0, len(topo_sort)):
             self._topo_sort[i] = topo_sort[i]
@@ -39,6 +51,8 @@ class TOPOS(object):
                 break
 
     def _build_dependency_dict(self):
+        """Build a dictionary of dependencies among nodes.
+        """
         open_set = Queue.Queue()
         closed_set = set()
 
@@ -74,16 +88,18 @@ class TOPOS(object):
         return dep_dict
 
     def _build_order_dict(self):
+        """Build a dictionary to quickly find an order of an ops.
+        """
         for order, dep_ops in self._topo_sort.items():
             for op in dep_ops:
                 self._orders[op] = order
 
     def _clean_bw_ops(self):
-        '''There are some bw ops that
+        """There are some bw ops that
              - have no incoming bw ops except its fw op, or
              - have no outgoing ops.
         Execution order of these ops may depend on Tensorflow runtime.
-        '''
+        """
 
         for i in range(0, len(self._topo_sort)):
             dep_ops = self._topo_sort[i]
@@ -94,8 +110,8 @@ class TOPOS(object):
                 self._topo_sort[i] = dep_ops
 
     def _clean_update_ops(self):
-        '''Remove ops that are in the update phase
-        '''
+        """Remove ops that are in the update phase.
+        """
         for i in range(0, len(self._topo_sort)):
             ops = self._topo_sort[i]
             # remove ops that are not bw or fw op
@@ -106,8 +122,8 @@ class TOPOS(object):
             self._topo_sort[i] = ops
 
     def _reindex(self):
-        ''' Remove orders with empty set and _reindex
-        '''
+        """Remove orders with empty set and _reindex.
+        """
         topo_sort = {}
         index = 0
         for i in range(0, len(self._topo_sort)):
@@ -118,18 +134,38 @@ class TOPOS(object):
         self._topo_sort = topo_sort
 
     def get_order(self, op):
+        """Return the order of an ops.
+
+        Args:
+          op: a `tf.Operation`.
+
+        Return:
+          An integer.
+        """
         if op in self._orders:
             return self._orders[op]
         else:
             return -1
 
     def get_ops(self, order):
+        """Return a set of ops with the same order.
+
+        Args:
+          order: an integer.
+
+        Return:
+          A set of `tf.Operation`
+        """
         return self._topo_sort[order]
 
     @property
     def size(self):
+        """The number of orders in the topological order.
+        """
         return len(self._topo_sort)
 
     @property
     def bw_starting_order(self):
+        """The starting order of the backward phase.
+        """
         return self._bw_starting_order
