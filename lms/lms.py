@@ -352,11 +352,17 @@ class LMS(object):
                 bw_frontier_ops = self._fuse_swapin_ops(
                     src_op, swapout_op, bw_frontier_ops, t)
             for dest_op in bw_frontier_ops:
-                # swap_in op
-                swapin_op = self._add_swapin(swapout_op, dest_op, t)
-                # control dependency -> swap_in
-                self._add_control_dependency(src_op, dest_op, swapin_op,
-                                             self._lb, self._ub)
+                if self._topo_sort.get_order(dest_op) < 0:
+                    new_src_ops = self._find_new_src_op(dest_op)
+                    self._log_info("new ops:{}".format([op.name for op in new_src_ops]))
+                    for op in new_src_ops:
+                        self._insert_swap_nodes(op)
+                else:
+                    # swap_in op
+                    swapin_op = self._add_swapin(swapout_op, dest_op, t)
+                    # control dependency -> swap_in
+                    self._add_control_dependency(src_op, dest_op, swapin_op,
+                                                 self._lb, self._ub)
 
     def _add_swapout(self, src_op, ts0):
         with tf.device(self._cpu_device):
@@ -393,18 +399,6 @@ class LMS(object):
         return swap_in.op
 
     def _add_control_dependency(self, fw_op, bw_op, swapin_op, lb, ub):
-        if self._topo_sort.get_order(bw_op) < 0:
-            nco = self._find_nco(fw_op, bw_op)
-            if nco:
-                bw_op = nco
-            else:
-                in_scope_ops = self._find_inscope(bw_op.name)
-                if in_scope_ops:
-                    bw_op = in_scope_ops
-                else:
-                    self._log_info("No control dependency op", 1)
-                    return
-
         # if lb is out of range, reset it to make sure
         # that a control dependency op will be found
         if (self._topo_sort.get_order(bw_op) - lb
@@ -451,6 +445,44 @@ class LMS(object):
                 min_order = order
                 nco_op = op
         return nco_op
+
+    def _find_new_src_op(self, bw_op):
+        '''Find a new src_op for LMS
+        '''
+        src_ops = set()
+        open_set = Queue.Queue()
+        closed_set = set()
+
+        open_set.put(bw_op)
+
+        while not open_set.empty():
+            src_op = open_set.get()
+
+            # do action for src_op
+            next_ops = set()
+
+            frontier_ops = set()
+            for t in src_op.outputs:
+                frontier_ops |= set(util.get_consuming_ops(t))
+            has_order_ops = {
+                op
+                for op in frontier_ops
+                if (self._topo_sort.get_order(op) >
+                    self._topo_sort.bw_starting_order)
+            }
+            if has_order_ops:
+                src_ops.add(src_op)
+            else:
+                next_ops = frontier_ops - has_order_ops
+
+            for op in next_ops:
+                if op in closed_set:
+                    continue
+                if op not in open_set.queue:
+                    open_set.put(op)
+
+            closed_set.add(src_op)
+        return src_ops
 
     def _find_inscope(self, scope):
         current_scope = scope
