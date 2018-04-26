@@ -423,39 +423,14 @@ class LMS(object):
         else:
             self._log_info("No control dependency op", 1)
 
-    def _find_nco(self, fw_op, bw_op):
-        '''Find the nearest common ops in reachable ops of two given ops
-        '''
-        frontier_ops = set()
-        for t in fw_op.outputs:
-            frontier_ops |= set(util.get_consuming_ops(t))
-        frontier_ops -= self._grad_ops
-        fw_reachable_ops = {op2
-                            for op1 in frontier_ops
-                            for op2 in set(self._get_forward_walk_ops(op1))}
-
-        bw_reachable_ops = set(self._get_forward_walk_ops(
-            bw_op, inclusive=False))
-        common_ops = fw_reachable_ops & bw_reachable_ops
-        min_order = self._topo_sort.size + 1
-        nco_op = None
-        for op in common_ops:
-            order = self._topo_sort.get_order(op)
-            if order < 0:
-                continue
-            if order < min_order:
-                min_order = order
-                nco_op = op
-        return nco_op
-
-    def _find_new_src_op(self, bw_op):
+    def _find_new_src_op(self, ops):
         '''Find a new src_op for LMS
         '''
         src_ops = set()
         open_set = Queue.Queue()
         closed_set = set()
 
-        open_set.put(bw_op)
+        open_set.put(ops)
 
         while not open_set.empty():
             src_op = open_set.get()
@@ -485,41 +460,6 @@ class LMS(object):
 
             closed_set.add(src_op)
         return src_ops
-
-    def _find_inscope(self, scope):
-        current_scope = scope
-        higher_scope = current_scope.rsplit('/', 1)[0]
-
-        visited_ops = set()
-        while (current_scope != higher_scope):
-            ops = set(ge.filter_ops_from_regex(
-                ge.make_list_of_op(self._graph),
-                "^{}".format(higher_scope)))
-
-            # not consider inner ops
-            ops1 = ops - visited_ops
-
-            # gradient ops only
-            ops1 &= self._grad_ops
-
-            # ops in chain rule
-            ops1 = {op for op in ops1 if self._topo_sort.get_order(op) > 0}
-
-            # get the earliest op
-            min_order = self._topo_sort.size + 1
-            earliest_op = None
-            for op in ops1:
-                order = self._topo_sort.get_order(op)
-                if order < min_order:
-                    min_order = order
-                    earliest_op = op
-            if not earliest_op:
-                # go outside
-                visited_ops |= ops
-                current_scope = higher_scope
-                higher_scope = current_scope.rsplit('/', 1)[0]
-            else:
-                return earliest_op
 
     def _do_chain_rule(self, fw_op, bw_op, lower_b, upper_b):  # BFS
         '''Find a control dependency operation using chain rules.
