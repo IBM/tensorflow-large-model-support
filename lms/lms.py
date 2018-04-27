@@ -452,9 +452,8 @@ class LMS(object):
             }
             if has_order_ops:
                 src_ops.add(src_op)
-            else:
-                next_ops = frontier_ops - has_order_ops
 
+            next_ops = frontier_ops - has_order_ops
             for op in next_ops:
                 if op in closed_set:
                     continue
