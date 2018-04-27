@@ -362,7 +362,8 @@ class LMS(object):
             if earliest_op:
                 self._add_control_dependency(src_op, earliest_op, swap_in.op,
                                              self._lb, self._ub)
-        return (bw_frontier_ops - fuse_bw_frontier_ops)
+            bw_frontier_ops -= fuse_bw_frontier_ops
+        return bw_frontier_ops
 
     def _get_branch_ops(self, within_ops, threshold=0):
         """Get ops whose order compared to the minimum order
