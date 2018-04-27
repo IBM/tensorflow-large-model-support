@@ -353,9 +353,12 @@ class LMS(object):
                     src_op, swapout_op, bw_frontier_ops, t)
             for dest_op in bw_frontier_ops:
                 if self._topo_sort.get_order(dest_op) < 0:
-                    new_src_ops = self._find_new_src_op(dest_op)
-                    for op in new_src_ops:
-                        self._insert_swap_nodes(op)
+                    if src_op in self._grad_ops:
+                        continue
+                    else:
+                        new_src_ops = self._find_new_src_op(dest_op)
+                        for op in new_src_ops:
+                            self._insert_swap_nodes(op)
                 else:
                     # swap_in op
                     swapin_op = self._add_swapin(swapout_op, dest_op, t)
