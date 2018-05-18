@@ -445,11 +445,19 @@ class LMS(object):
                 bw_frontier_ops = self._fuse_swapin_ops(
                     src_op, swapout_op, bw_frontier_ops, t)
             for dest_op in bw_frontier_ops:
-                # swap_in op
-                swapin_op = self._add_swapin(swapout_op, dest_op, t)
-                # control dependency -> swap_in
-                self._add_control_dependency(src_op, dest_op, swapin_op,
-                                             self._lb, self._ub)
+                if self._topo_sort.get_order(dest_op) < 0:
+                    if src_op in self._grad_ops:
+                        continue
+                    else:
+                        new_src_ops = self._find_new_src_op(dest_op)
+                        for op in new_src_ops:
+                            self._insert_swap_nodes(op)
+                else:
+                    # swap_in op
+                    swapin_op = self._add_swapin(swapout_op, dest_op, t)
+                    # control dependency -> swap_in
+                    self._add_control_dependency(src_op, dest_op, swapin_op,
+                                                 self._lb, self._ub)
 
     def _add_swapout(self, src_op, ts0):
         """Add a swapout operation to the graph.
@@ -520,24 +528,15 @@ class LMS(object):
           lb: an `integer`.
           up: an `integer`.
         """
-        if self._topo_sort.get_order(bw_op) < 0:
-            nco = self._find_nco(fw_op, bw_op)
-            if nco:
-                bw_op = nco
-            else:
-                in_scope_ops = self._find_inscope(bw_op.name)
-                if in_scope_ops:
-                    bw_op = in_scope_ops
-                else:
-                    self._log_info("No control dependency op", 1)
-                    return
-
         # if lb is out of range, reset it to make sure
         # that a control dependency op will be found
         if (self._topo_sort.get_order(bw_op) - lb
             <= self._topo_sort.get_order(fw_op)):
             lb = 1
-        if self._ctrld_strategy is CTRLD_Strategy.CHAIN_RULE:
+        
+        if fw_op in self._grad_ops:
+            re = self._do_direct_order(fw_op, bw_op, lb, ub)
+        elif self._ctrld_strategy is CTRLD_Strategy.CHAIN_RULE:
             re = self._do_chain_rule(fw_op, bw_op, lb, ub)
         elif self._ctrld_strategy is CTRLD_Strategy.DIRECT_ORDER:
             re = self._do_direct_order(fw_op, bw_op, lb, ub)
@@ -554,80 +553,42 @@ class LMS(object):
         else:
             self._log_info("No control dependency op", 1)
 
-    def _find_nco(self, fw_op, bw_op):
-        """Find the nearest common ops in reachable ops of two given ops.
+    def _find_new_src_op(self, ops):
+        '''Find a new src_op for LMS
+        '''
+        src_ops = set()
+        open_set = Queue.Queue()
+        closed_set = set()
 
-        Args:
-          fw_op: a `tf.Operation`.
-          bw_op: a `tf.Operation`.
+        open_set.put(ops)
 
-        Return:
-          A set of `tf.Operation`.
-        """
-        frontier_ops = set()
-        for t in fw_op.outputs:
-            frontier_ops |= set(util.get_consuming_ops(t))
-        frontier_ops -= self._grad_ops
-        fw_reachable_ops = {op2
-                            for op1 in frontier_ops
-                            for op2 in set(self._get_forward_walk_ops(op1))}
+        while not open_set.empty():
+            src_op = open_set.get()
 
-        bw_reachable_ops = set(self._get_forward_walk_ops(
-            bw_op, inclusive=False))
-        common_ops = fw_reachable_ops & bw_reachable_ops
-        min_order = self._topo_sort.size + 1
-        nco_op = None
-        for op in common_ops:
-            order = self._topo_sort.get_order(op)
-            if order < 0:
-                continue
-            if order < min_order:
-                min_order = order
-                nco_op = op
-        return nco_op
+            # do action for src_op
+            next_ops = set()
 
-    def _find_inscope(self, scope):
-        """Find the closest ops that are backward ops by expanding from the scope.
+            frontier_ops = set()
+            for t in src_op.outputs:
+                frontier_ops |= set(util.get_consuming_ops(t))
+            has_order_ops = {
+                op
+                for op in frontier_ops
+                if (self._topo_sort.get_order(op) >
+                    self._topo_sort.bw_starting_order)
+            }
+            if has_order_ops:
+                src_ops.add(src_op)
 
-        Args:
-          scope: a scope path.
+            next_ops = frontier_ops - has_order_ops
+            for op in next_ops:
+                if op in closed_set:
+                    continue
+                if op not in open_set.queue:
+                    open_set.put(op)
 
-        Return:
-          A set of `tf.Operation`.
-        """
-        current_scope = scope
-        higher_scope = current_scope.rsplit('/', 1)[0]
-
-        visited_ops = set()
-        while (current_scope != higher_scope):
-            ops = set(ge.filter_ops_from_regex(
-                ge.make_list_of_op(self._graph),
-                "^{}".format(higher_scope)))
-
-            # not consider inner ops
-            ops1 = ops - visited_ops
-
-            # gradient ops only
-            ops1 &= self._grad_ops
-
-            # ops in chain rule
-            ops1 = {op for op in ops1 if self._topo_sort.get_order(op) > 0}
-
-            # get the earliest op
-            min_order = self._topo_sort.size + 1
-            earliest_op = None
-            for op in ops1:
-                order = self._topo_sort.get_order(op)
-                if order < min_order:
-                    min_order = order
-                    earliest_op = op
-            if not earliest_op:
-                # go outside
-                visited_ops |= ops
-                current_scope = higher_scope
-                higher_scope = current_scope.rsplit('/', 1)[0]
-            else:
-                return earliest_op
+            closed_set.add(src_op)
+        return src_ops
 
     def _do_chain_rule(self, fw_op, bw_op, lower_b, upper_b):  # BFS
         """Find a control dependency operation using chain rules.
