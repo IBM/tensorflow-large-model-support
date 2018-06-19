@@ -33,7 +33,6 @@ import tempfile
 from tensorflow.examples.tutorials.mnist import input_data
 
 import tensorflow as tf
-import tensorflow.contrib.graph_editor as ge
 
 tf.logging.set_verbosity(tf.logging.INFO)
 FLAGS = None
@@ -153,26 +152,21 @@ def main(_):
 
   # Enable Large Model Support
   from lms import LMS
-  lms_model = LMS(optimizer_scopes={'adam_optimizer'},
+  lms_model = LMS({'adam_optimizer'},
                   excl_scopes = {'loss', 'accuracy', 'dropout'},
-                  fuse_swapins=True,
                   lb=3)
   lms_model.run(tf.get_default_graph())
 
-  g = tf.get_default_graph()
-  g_def = g.as_graph_def()
-
-  graph_location = "./mnist_log/"
+  graph_location = tempfile.mkdtemp()
   print('Saving graph to: %s' % graph_location)
   train_writer = tf.summary.FileWriter(graph_location)
   train_writer.add_graph(tf.get_default_graph())
 
   with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
-    # for i in range(20000):
-    for i in range(10):
+    for i in range(20000):
       batch = mnist.train.next_batch(50)
-      if i % 10 == 0:
+      if i % 100 == 0:
         train_accuracy = accuracy.eval(feed_dict={
             x: batch[0], y_: batch[1], keep_prob: 1.0})
         print('step %d, training accuracy %g' % (i, train_accuracy))

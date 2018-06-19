@@ -18,6 +18,7 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
+import tempfile # Change not related to LMS
 import tensorflow as tf
 
 tf.logging.set_verbosity(tf.logging.INFO)
@@ -35,8 +36,7 @@ def cnn_model_fn(features, labels, mode):
   # Padding is added to preserve width and height.
   # Input Tensor Shape: [batch_size, 28, 28, 1]
   # Output Tensor Shape: [batch_size, 28, 28, 32]
-  with tf.name_scope('conv1'):
-    conv1 = tf.layers.conv2d(
+  conv1 = tf.layers.conv2d(
       inputs=input_layer,
       filters=32,
       kernel_size=[5, 5],
@@ -125,9 +125,15 @@ def main(unused_argv):
   eval_data = mnist.test.images  # Returns np.array
   eval_labels = np.asarray(mnist.test.labels, dtype=np.int32)
 
+  # The graph_location changes are not related to LMS enablement
+  # but rather allow multiple users to run the example without
+  # having permission issues on temp directories.
+  graph_location = tempfile.mkdtemp()
+  print('Saving graph to: %s' % graph_location)
+
   # Create the Estimator
   mnist_classifier = tf.estimator.Estimator(
-      model_fn=cnn_model_fn, model_dir="/tmp/mnist_convnet_model")
+      model_fn=cnn_model_fn, model_dir=graph_location)
 
   # Set up logging for predictions
   # Log the values in the "Softmax" tensor with label "probabilities"
@@ -145,11 +151,11 @@ def main(unused_argv):
 
   # Hook for Large Model Support
   from lms import LMSHook
-  lms_hook = LMSHook(optimizer_scopes={'adam_optimizer'}, lb=3, debug=True)
+  lms_hook = LMSHook({'adam_optimizer'}, lb=3, debug=True)
 
   mnist_classifier.train(
       input_fn=train_input_fn,
-      steps=20,  # 20000
+      steps=20000,
       hooks=[logging_hook, lms_hook])
 
   # Evaluate the model and print results

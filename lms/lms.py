@@ -1,8 +1,24 @@
+# (C) Copyright IBM Corp. 2018. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
 """LMS
 """
-import tensorflow as tf
 import tensorflow.contrib.graph_editor as ge
 from tensorflow.contrib.graph_editor import util
+from tensorflow.python.platform import tf_logging
+from tensorflow.python.framework import ops
+from tensorflow.python.ops import array_ops
 
 import time
 from six.moves import queue as Queue
@@ -31,8 +47,9 @@ class LMS(object):
     operations on the host. In theory, this procedure does not have any
     effect on the training convergence as well as inference task.
     """
-    def __init__(self, graph=None, optimizer_scopes=set(),
+    def __init__(self, optimizer_scopes, graph=None,
                  starting_scope=None,
+                 starting_op_names=None,
                  excl_scopes=set(),
                  incl_scopes=set(),
                  excl_types=set(),
@@ -55,6 +72,8 @@ class LMS(object):
           starting_scope: tensors that are reachable from the operations in
             this scope will be swapped for LMS. Set this to the scope of the
             first layer if we would like to modify the whole graph.
+          starting_op_names: tensors that are reachable from the operations with
+            these names will be swapped for LMS.
           excl_scopes: a set of scopes for operations whose tensors will not
             be swapped out to the host. Default `empty`.
           incl_scopes: a set of scopes for operations whose tensors will be
@@ -72,15 +91,28 @@ class LMS(object):
           ub: upper-bound value for LMS. Default `10000`.
           fuse_swapins: Fuse "close" swap-in operations into one operation.
             This may improve the performance. Default `False`.
+          ctrld_strategy: Two strategies to find control dependency ops for
+            swapin ops: `chain_rule` and `direct_order`. `chain_rule` strategy
+            starts from a forward operation, goes forward and finds a corresponding
+            backward operation to be a control dependency opepartion. `direct_order`
+            strategy directly gets a backward ops in the topological order to be
+            a control dependency operation. Both strategies depend on `lb` and `ub`
+            to choose a control dependency operation. While the `direct_order` is
+            more exact than `chain_rule` in relation to `lb` and `ub`, it experimentally
+            often results in smaller maximum batch size than `chain_rule`.
+            Default `chain_rule`.
+          swap_branches: If True, LMS will swap tensors in branches in the
+            forward phase. Default `False`.
+          branch_threshold: If `swap_branches` is enabled and the
+            topological-sort distance between the consuming operation and generating
+            operation of a tensor is greater than `branch_threshold`, then swap the
+            tensor. Default `0`.
           debug: debug mode for LMS. Default `False`.
           debug_level: Debug level for LMS (1 or 2). Default `1`.
           cpu_device: the device we would like swap tensors to.
         """
-        # TODO, throw an exception here, probably make optimizer_scopes
-        # be a positional arg
         if not optimizer_scopes:
-            self._log_info("set the optimizer scope")
-            return
+            raise ValueError('A least one optimizer scope is required.')
 
         self._graph = graph
         self._optimizer_scopes = optimizer_scopes
@@ -89,8 +121,9 @@ class LMS(object):
         self._excl_types = excl_types
         self._incl_types = incl_types
         self._starting_scope = starting_scope
-        self._lb = lb
-        self._ub = ub
+        self._starting_op_names = starting_op_names
+        self._lb = lb  # lowerbound
+        self._ub = ub  # upperbound
         self._n_tensors = n_tensors
         self._fuse_swapins = fuse_swapins
         if ctrld_strategy == "chain_rule":
@@ -98,7 +131,7 @@ class LMS(object):
         elif ctrld_strategy == "direct_order":
             self._ctrld_strategy = CTRLD_Strategy.DIRECT_ORDER
         else:
-            self._ctrld_strategy = "chain_rule"
+            self._ctrld_strategy = CTRLD_Strategy.CHAIN_RULE
 
         self._swap_branches = swap_branches
         self._branch_threshold = branch_threshold
@@ -106,7 +139,8 @@ class LMS(object):
         # Operations with these types will be ignored
         atomic_types = {'Const', 'Mul', 'Add',
                         'Identity', 'Assign', 'VariableV2',
-                        'Reshape', 'Shape', 'ShapeN', 'Placeholder'}
+                        'Reshape', 'Shape', 'ShapeN',
+                        'Placeholder'}
         self._excl_types |= atomic_types
 
         self._excl_ops = set()
@@ -141,16 +175,24 @@ class LMS(object):
         Otherwise, this method automatically searches for starting ops.
         """
         # seep ops for search
-        seed_ops = None
+        seed_ops = set()
+        ops = ge.make_list_of_op(self._graph)
         if self._starting_scope:
-            seed_ops = ge.filter_ops_from_regex(
-                ge.make_list_of_op(self._graph), "^{}".format(
-                    self._starting_scope))
-        else:
+            seed_ops = set(ge.filter_ops_from_regex(ops,
+                "^{}".format(self._starting_scope)))
+
+        if self._starting_op_names:
+            for name in self._starting_op_names:
+                seed_ops |= set(ge.filter_ops_from_regex(ops,
+                    "^{}$".format(name)))
+
+        seed_ops = list(seed_ops)
+        if not seed_ops:
             candidates = set()
-            for op in self._graph.get_operations():
-                if op in self._grad_ops:
-                    continue
+            non_grad_ops = [op
+                            for op in self._graph.get_operations()
+                            if not (op in self._grad_ops)]
+            for op in non_grad_ops:
                 for t in op.outputs:
                     frontier_ops = set(util.get_consuming_ops(t))
                     if (frontier_ops & self._grad_ops):
@@ -161,8 +203,8 @@ class LMS(object):
             tmp_dict = {}
             max_nelems = -1
             for op in candidates:
-                nelems = len(set(self._get_forward_walk_ops(op,
-                                                            inclusive=False))
+                nelems = len(set(ge.get_forward_walk_ops(op, within_ops=non_grad_ops,
+                                                         inclusive=False))
                              & candidates)
                 if nelems > 0:
                     tmp_dict[op] = nelems
@@ -191,6 +233,8 @@ class LMS(object):
         return ops
 
     def _get_forward_walk_ops(self, op, inclusive=True):
+        """ A wrapper of `tensorflow.contrib.graph_editor.get_forward_walk_ops`
+        """
         if op in self._ops_dict:
             if inclusive:
                 return self._ops_dict[op]
@@ -212,20 +256,21 @@ class LMS(object):
         The graph is modified in-place.
 
         Return:
+
           a set of added ops.
         """
         if graph:
             self._graph = graph
 
-        if not self._graph:
-            self._log_info("Input graph: Not found")
-            return
-
         if self._n_tensors == 0:
-            self._log_info("Not modify model for LMS")
+            self._log_info("LMS is disabled and will not modify the model.")
             return  # turn off LMS
         elif self._n_tensors < 0:
             self._n_tensors = 0  # swap all tensors (default)
+
+        if not self._graph:
+            raise ValueError('The dataflow graph is required but has not been'
+                             ' provided.')
 
         self._log_info("Editing model for LMS")
         self._print_configuration()
@@ -302,6 +347,8 @@ class LMS(object):
 
             # do action for src_op
             self._insert_swap_nodes(src_op)
+            if self._swapped_max_tensors():
+                return
 
             for op in next_ops:
                 if op in closed_set:
@@ -329,8 +376,8 @@ class LMS(object):
             op for op in bw_frontier_ops
             if self._topo_sort.get_order(op) > 0}
         if len(fuse_bw_frontier_ops) >= 2:
-            with tf.device(self._cpu_device):
-                swap_in = tf.identity(ts0)
+            with ops.device(self._cpu_device):
+                swap_in = array_ops.identity(ts0)
 
             # Connect: swap_out -> swap_in
             self._connect_ops(swapout_op, swap_in.op)
@@ -360,8 +407,7 @@ class LMS(object):
                     min_order = order
                     earliest_op = op
             if earliest_op:
-                self._add_control_dependency(src_op, earliest_op, swap_in.op,
-                                             self._lb, self._ub)
+                self._add_control_dependency(src_op, earliest_op, swap_in.op)
             bw_frontier_ops -= fuse_bw_frontier_ops
         return bw_frontier_ops
 
@@ -407,7 +453,7 @@ class LMS(object):
                 return
 
         for t in src_op.outputs:
-            if (self._n_tensors > 0) and (self._incpu_count >= self._n_tensors):
+            if self._swapped_max_tensors():
                 return
 
             frontier_ops = set(util.get_consuming_ops(t))
@@ -427,7 +473,7 @@ class LMS(object):
             # These bw ops can be removed by Tensorflow compiler
             bw_frontier_ops = {op
                                for op in bw_frontier_ops
-                               if op.outputs}
+                               if set(self._get_forward_walk_ops(op, inclusive=False))}
 
             if not bw_frontier_ops:
                 continue
@@ -456,23 +502,33 @@ class LMS(object):
                     # swap_in op
                     swapin_op = self._add_swapin(swapout_op, dest_op, t)
                     # control dependency -> swap_in
-                    self._add_control_dependency(src_op, dest_op, swapin_op,
-                                                 self._lb, self._ub)
+                    self._add_control_dependency(src_op, dest_op, swapin_op)
 
     def _add_swapout(self, src_op, ts0):
-        """Add a swapout operation to the graph.
+        """Add a swapout operation to the graph to swap out the output tensor `ts0`
+        of the operation `src_op`.
 
         This method does an in-place modification to the graph.
 
+        Example: the graph before and after this method invoked.
+        ```
+        Before
+          (src_op) -> |ts0| -> (dest_op)
+
+        After:
+          (src_op) -> |ts0| -> (swapout_op)
+          |ts0| -> (dest_op)
+        ```
+
         Args:
-          src_op: a `tf.Operation`.
-          ts0: a `tf.Tensor`.
+          src_op: a `tf.Operation` that produces the tensor `ts0`.
+          ts0: a output `tf.Tensor` of `src_op` being swapped out.
 
         Return:
-          A `tf.Operation`.
+          A `tf.Operation` newly added to the graph.
         """
-        with tf.device(self._cpu_device):
-            swap_out = tf.identity(ts0)
+        with ops.device(self._cpu_device):
+            swap_out = array_ops.identity(ts0)
 
         # Connect: src-node -> swap-out
         src_svg = ge.sgv(src_op, graph=self._graph)
@@ -486,20 +542,32 @@ class LMS(object):
         return swap_out.op
 
     def _add_swapin(self, swapout_op, dest_op, ts0):
-        """Add a swapin operation to the graph.
+        """Add a swapin operation to the graph. The swapin ops reads
+        the output tensor of `swapout_op` and passes it to `dest_op`,
+        replacing the input tensor `ts0` of `dest_op`.
 
         This method does an in-place modification to the graph.
 
+        Example: the graph before and after this method invoked.
+        ```
+        Before
+          |ts0| -> (swapout_op)
+          |ts0| -> (dest_op)
+
+        After:
+          |ts0| -> (swapout_op) -> (swapin_op) -> (dest_op)
+        ```
+
         Args:
-          swapout_op: a `tf.Operation`.
-          dest_op: a `tf.Operation`.
-          ts0: a `tf.Tensor`.
+          swapout_op: a `tf.Operation` that swapped out the tensor `ts0`.
+          dest_op: a `tf.Operation` that will consume the output tensor of `swapout_op`.
+          ts0: a `tf.Tensor` being the original input tensor of `dest_op`.
 
         Return:
-          A `tf.Operation`.
+          A `tf.Operation` newly added to the graph.
         """
-        with tf.device(self._cpu_device):
-            swap_in = tf.identity(ts0)
+        with ops.device(self._cpu_device):
+            swap_in = array_ops.identity(ts0)
 
         # Connect: swap_out -> swap_in
         self._connect_ops(swapout_op, swap_in.op)
@@ -516,7 +584,7 @@ class LMS(object):
 
         return swap_in.op
 
-    def _add_control_dependency(self, fw_op, bw_op, swapin_op, lb, ub):
+    def _add_control_dependency(self, fw_op, bw_op, swapin_op):
         """Find and add a control dependency to the graph.
 
         This method does an in-place modification to the graph.
@@ -525,23 +593,21 @@ class LMS(object):
           fw_op: a `tf.Operation`.
           bw_op: a `tf.Operation`.
           swapin_op: a `tf.Operation`.
-          lb: an `integer`.
-          up: an `integer`.
         """
         # if lb is out of range, reset it to make sure
         # that a control dependency op will be found
+        lb = self._lb
         if (self._topo_sort.get_order(bw_op) - lb
             <= self._topo_sort.get_order(fw_op)):
             lb = 1
-        
         if fw_op in self._grad_ops:
-            re = self._do_direct_order(fw_op, bw_op, lb, ub)
+            re = self._do_direct_order(fw_op, bw_op, lb, self._ub)
         elif self._ctrld_strategy is CTRLD_Strategy.CHAIN_RULE:
-            re = self._do_chain_rule(fw_op, bw_op, lb, ub)
+            re = self._do_chain_rule(fw_op, bw_op, lb, self._ub)
         elif self._ctrld_strategy is CTRLD_Strategy.DIRECT_ORDER:
-            re = self._do_direct_order(fw_op, bw_op, lb, ub)
+            re = self._do_direct_order(fw_op, bw_op, lb, self._ub)
         else:
-            re = self._do_chain_rule(fw_op, bw_op, lb, ub)
+            re = self._do_chain_rule(fw_op, bw_op, lb, self._ub)
 
         ctrld_op = re[0]
         ctrld_order = re[1]
@@ -551,16 +617,32 @@ class LMS(object):
                 "Control dependency op {},  order: {}".format(
                     ctrld_op.name, ctrld_order), 1)
         else:
-            self._log_info("No control dependency op", 1)
+            self._log_info(
+                "No control dependency op needed for swap in of op {}.".format(
+                    fw_op.name), 1)
 
-    def _find_new_src_op(self, ops):
-        '''Find a new src_op for LMS
-        '''
+    def _find_new_src_op(self, original_op):
+        """Find a set of new operations to swap out their output tensors.
+
+        This method is used when `original_op` produces a tensor that is consumed by
+        a backward ops whose order is negative. In this case, the tensor might be consumed
+        immediately by the backward ops, depending on TensorFlow runtime. Hence, there is
+        no need to swap out the tensor.
+
+        This method starts from `original_op` and returns operations whose output tensors
+        are consumed by backward operations with positive order.
+
+        Args:
+          `original_op`: a `tf.Operation`.
+
+        Return:
+          A set of `tf.Operation`.
+        """
         src_ops = set()
         open_set = Queue.Queue()
         closed_set = set()
 
-        open_set.put(ops)
+        open_set.put(original_op)
 
         while not open_set.empty():
             src_op = open_set.get()
@@ -590,18 +672,28 @@ class LMS(object):
             closed_set.add(src_op)
         return src_ops
 
-    def _do_chain_rule(self, fw_op, bw_op, lower_b, upper_b):  # BFS
+    def _do_chain_rule(self, fw_op, bw_op, lower_b, upper_b):
         """Find a control dependency operation using chain rules.
-        Go down along the forward phase to find corresponding bw ops.
+        Go down along the forward phase to find corresponding backward ops
+        as candidates for control dependency ops.
 
         Args:
-          fw_op: a `tf.Operation`.
-          bw_op: a `tf.Operation`.
-          lower_b: an `integer`.
-          upper_b: an `integer`.
+          fw_op: a `tf.Operation` that has a tensor swapped out.
+          bw_op: a `tf.Operation` that consumes a tensor swapped in.
+          lower_b: an `integer`. The distance in the graph between
+            `fw_op` and a forward operation that has corresponding backward
+            ops as candidates for control dependency ops must be greater than
+            `lower_b`.
+          upper_b: an `integer`. The distance in the graph between
+            `fw_op` and a forward operation that has corresponding backward
+             ops as candidates for control dependency ops must be smaller than
+            `upper_b`
 
         Return:
-          A tuple of (`tf.Operation`, an `integer`).
+          A tuple of (`tf.Operation`, an `integer`). The first item is
+          the control dependency operation that triggers swapping in the input
+          tensor of `bw_op`. The second item is the order of the control
+          dependency operation in the topological order.
         """
         fw_order = self._topo_sort.get_order(fw_op)
         bw_order = self._topo_sort.get_order(bw_op)
@@ -642,6 +734,10 @@ class LMS(object):
                     op
                     for op in consumming_ops_bw
                     if self._topo_sort.get_order(op) < bw_order}
+                consumming_ops_bw = {
+                    op
+                    for op in consumming_ops_bw
+                    if '/cond/' not in op.name}
                 result_ops |= consumming_ops_bw
             # go to the next level
             next_ops = total_consumming_ops - self._grad_ops
@@ -669,13 +765,20 @@ class LMS(object):
         """Find a control dependency operation using topological sort.
 
         Args:
-          fw_op: a `tf.Operation`.
-          bw_op: a `tf.Operation`.
-          lower_b: an `integer`.
-          upper_b: an `integer`.
+          fw_op: a `tf.Operation` that has a tensor swapped out.
+          bw_op: a `tf.Operation` that consumes a tensor swapped in.
+          lower_b: an `integer`. The distance in the topological order
+            between `bw_op` and a candidate for control dependency ops
+            must be greater than `lower_b`.
+          upper_b: an `integer`. The distance in the topological order
+            between `bw_op` and a candidate for control dependency ops
+            must be smaller than `upper_b`
 
         Return:
-          A tuple of (`tf.Operation`, `integer`).
+          A tuple of (`tf.Operation`, an `integer`). The first item is
+          the control dependency operation that triggers swapping in the input
+          tensor of `bw_op`. The second item is the order of the control
+          dependency operation in the topological order.
         """
         result_ops = set()
 
@@ -693,6 +796,9 @@ class LMS(object):
             candidates = {op
                           for op in candidates
                           if src_op in set(self._get_forward_walk_ops(op))}
+            candidates = {op
+                          for op in candidates
+                          if "/cond/" not in op.name}
             if candidates:
                 result_ops |= candidates
                 ctrld_order = i
@@ -712,9 +818,9 @@ class LMS(object):
           level: an `integer`.
         """
         if level == 0 or (self._debug and self._debug_level >= level):
-            # Use tf.logging.info instead of print, since print
+            # Use tf_logging.info instead of print, since print
             # is not thread safe, which can break tests.
-            tf.logging.info("[LMS][{}] {}".format(level, message))
+            tf_logging.info("[LMS][{}] {}".format(level, message))
 
     def _print_configuration(self):
         """Print configuration information about LMS.
@@ -748,3 +854,9 @@ class LMS(object):
             dest_sgv = dest_sgv.remap_inputs([idx])
 
         ge.connect(src_sgv, dest_sgv, disconnect_first)
+
+    def _swapped_max_tensors(self):
+        """Check whether we swapped enough tensors or not.
+        """
+        return ((self._n_tensors > 0) and
+                (self._incpu_count >= self._n_tensors))

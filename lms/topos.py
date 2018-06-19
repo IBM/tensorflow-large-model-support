@@ -1,7 +1,22 @@
+# (C) Copyright IBM Corp. 2018. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 """TOPOS
 """
 from six.moves import queue as Queue
-from toposort import toposort as tps
+import toposort
 
 import tensorflow.contrib.graph_editor as ge
 from tensorflow.contrib.graph_editor import util
@@ -27,7 +42,7 @@ class TOPOS(object):
     def build(self):
         """Build a topological order
         """
-        topo_sort = list(tps(self._build_dependency_dict()))
+        topo_sort = list(toposort.toposort(self._build_dependency_dict()))
         for i in range(0, len(topo_sort)):
             self._topo_sort[i] = topo_sort[i]
 
@@ -100,7 +115,6 @@ class TOPOS(object):
              - have no outgoing ops.
         Execution order of these ops may depend on Tensorflow runtime.
         """
-
         for i in range(0, len(self._topo_sort)):
             dep_ops = self._topo_sort[i]
             fw_dep_ops = dep_ops - self._grad_ops
@@ -112,14 +126,13 @@ class TOPOS(object):
     def _clean_update_ops(self):
         """Remove ops that are in the update phase.
         """
+        update_ops = set(ge.get_forward_walk_ops(
+            list(self._grad_ops), inclusive=False))
         for i in range(0, len(self._topo_sort)):
             ops = self._topo_sort[i]
             # remove ops that are not bw or fw op
             # e.g ops in the update phase
-            ops = {op for op in ops
-                   if (set(ge.get_forward_walk_ops(op))
-                       & self._grad_ops)}
-            self._topo_sort[i] = ops
+            self._topo_sort[i] = ops - update_ops
 
     def _reindex(self):
         """Remove orders with empty set and _reindex.
@@ -134,7 +147,7 @@ class TOPOS(object):
         self._topo_sort = topo_sort
 
     def get_order(self, op):
-        """Return the order of an ops.
+        """Return the order of an operation.
 
         Args:
           op: a `tf.Operation`.
