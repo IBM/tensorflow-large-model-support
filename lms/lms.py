@@ -528,7 +528,7 @@ class LMS(object):
           A `tf.Operation` newly added to the graph.
         """
         with ops.device(self._cpu_device):
-            swap_out = array_ops.identity(ts0)
+            swap_out = array_ops.identity(ts0, name="lms/swapout")
 
         # Connect: src-node -> swap-out
         src_svg = ge.sgv(src_op, graph=self._graph)
@@ -567,7 +567,7 @@ class LMS(object):
           A `tf.Operation` newly added to the graph.
         """
         with ops.device(self._cpu_device):
-            swap_in = array_ops.identity(ts0)
+            swap_in = array_ops.identity(ts0, name="lms/swapin")
 
         # Connect: swap_out -> swap_in
         self._connect_ops(swapout_op, swap_in.op)
