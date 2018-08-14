@@ -181,6 +181,8 @@ class LMS(object):
         # build a topological sort
         self._topo_sort = topos.TOPOS(all_ops)
         self._topo_sort.build()
+        self._log_info("Topological sort size: {}".format(
+            self._topo_sort.size))
         for i in range(0, self._topo_sort.size):
             self._log_info("[{}]: {}".format(
                 i, [op.name for op in self._topo_sort.get_ops(i)]), 1)
