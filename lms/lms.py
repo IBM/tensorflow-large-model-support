@@ -189,11 +189,11 @@ class LMS(object):
         # check the validation of the new model
         self._log_info("Added {} ops into the model".format(
             len(self._added_ops)))
-        self._log_info("Editing model for LMS, took: {} ms".format(
-            (time.time()-start_time)*1000))
         self._log_info(
             "{} tensors will be swapped out, {} tensors will be swapped in".format(
                 self._swapout_tensors, self._swapin_tensors))
+        self._log_info("Editing model for LMS, took: {} ms".format(
+            (time.time()-start_time)*1000))
         return self._added_ops
 
     def _do_action(self, src_ops):
