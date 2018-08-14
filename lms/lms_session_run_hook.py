@@ -21,7 +21,7 @@ class LMSHook(session_run_hook.SessionRunHook):
     ''' This hook is to modify the input graph for Large Model Support
     by adding swap operations.
     '''
-    def __init__(self, optimizer_scopes, **kwargs):
+    def __init__(self, **kwargs):
         """Create an LMSHook object to edit the graph for supporting large model.
 
         Args:
@@ -32,7 +32,7 @@ class LMSHook(session_run_hook.SessionRunHook):
                   is generally not available at hook initilization time.
         """
         kwargs.pop('graph', None)
-        self.lms_obj = LMS(optimizer_scopes, **kwargs)
+        self.lms_obj = LMS(**kwargs)
 
     def begin(self):
         self.lms_obj.run(ops.get_default_graph())

@@ -53,7 +53,7 @@ class LMS(object):
                  excl_types=set(),
                  incl_types=set(),
                  lb=1, ub=10000,
-                 threshold=0,
+                 threshold=5,
                  debug=False,
                  debug_level=1,
                  cpu_device="/cpu:0"):
@@ -101,10 +101,13 @@ class LMS(object):
         self._debug_level = debug_level
 
         # keep log of tensors on host
-        self._incpu_count = 0
-
+        self._swapout_tensors = 0
+        self._swapin_tensors = 0
         # added ops
-        self.added_ops = {}
+        self._added_ops = set()
+
+        # store a dictionary of visited ops to avoid multiple visits
+        self._ops_dict = {}
 
     def _filter_scopes_and_types(self, within_ops, scopes, types):
         """Filter out ops that are not in `scopes` and not of `types`.
@@ -154,12 +157,6 @@ class LMS(object):
         if graph:
             self._graph = graph
 
-        if self._n_tensors == 0:
-            self._log_info("LMS is disabled and will not modify the model.")
-            return  # turn off LMS
-        elif self._n_tensors < 0:
-            self._n_tensors = 0  # swap all tensors (default)
-
         if not self._graph:
             raise ValueError('The dataflow graph is required but has not been'
                              ' provided.')
@@ -171,19 +168,17 @@ class LMS(object):
         all_ops = ge.make_list_of_op(self._graph)
 
         self._log_info(
-            "The graph has {} ops in total".format(len(all_ops), 1)
+            "The graph has {} ops in total".format(len(all_ops), 1))
 
         # exclusive ops
-        self._excl_ops = self._filter_scopes_and_types(all_ops,
-                                                       self._excl_scopes,
-                                                       self._excl_types)
+        self._excl_ops = self._filter_scopes_and_types(
+            all_ops, self._excl_scopes, self._excl_types)
         # inclusive ops
-        self._incl_ops = self._filter_scopes_and_types(all_ops,
-                                                       self._incl_scopes,
-                                                       self._incl_types)
+        self._incl_ops = self._filter_scopes_and_types(
+            all_ops, self._incl_scopes, self._incl_types)
 
         # build a topological sort
-        self._topo_sort = topos.TOPOS(seed_ops)
+        self._topo_sort = topos.TOPOS(all_ops)
         self._topo_sort.build()
         for i in range(0, self._topo_sort.size):
             self._log_info("[{}]: {}".format(
@@ -192,12 +187,13 @@ class LMS(object):
         self._do_action(all_ops)
 
         # check the validation of the new model
-        self._log_info("Added {} ops into the model".format(len(self._added_ops)))
+        self._log_info("Added {} ops into the model".format(
+            len(self._added_ops)))
         self._log_info("Editing model for LMS, took: {} ms".format(
             (time.time()-start_time)*1000))
         self._log_info(
-            "{} tensors will be swapped out(in) to(from) the host".format(
-                self._incpu_count))
+            "{} tensors will be swapped out, {} tensors will be swapped in".format(
+                self._swapout_tensors, self._swapin_tensors))
         return self._added_ops
 
     def _do_action(self, src_ops):
@@ -219,7 +215,7 @@ class LMS(object):
             next_ops = set()
             for t in src_op.outputs:
                 frontier_ops = set(util.get_consuming_ops(t))
-                next_ops |= frontier_ops - self.added_ops
+                next_ops |= frontier_ops - self._added_ops
 
             # do action for src_op
             self._insert_swap_nodes(src_op)
@@ -282,13 +278,14 @@ class LMS(object):
 
             # create swap_out node only if there exists a real dest. operation
             swapout_op = self._add_swapout(src_op, t)
-            self._incpu_count = self._incpu_count + 1
+            self._swapout_tensors = self._swapout_tensors + 1
             self._added_ops.add(swapout_op)
 
             # create swap_in nodes
             for dest_op in candidates:
                 # swap_in op
                 swapin_op = self._add_swapin(swapout_op, dest_op, t)
+                self._swapin_tensors = self._swapin_tensors + 1
                 self._added_ops.add(swapin_op)
                 # control dependency -> swap_in
                 self._add_control_dependency(src_op, dest_op, swapin_op)
@@ -364,7 +361,8 @@ class LMS(object):
         # Connect: swap_in -> dest
         dest_svg = ge.sgv(dest_op, graph=self._graph)
         input_idx = dest_svg.input_index(ts0)
-        self._connect_ops(swap_in.op, dest_op, remap_inputs=True, idx=input_idx)
+        self._connect_ops(swap_in.op, dest_op,
+                          remap_inputs=True, idx=input_idx)
         self._excl_ops.add(swap_in.op)
 
         self._log_info("Consuming op {} (order {}) swaps in {}".format(
@@ -463,10 +461,7 @@ class LMS(object):
     def _print_configuration(self):
         """Print configuration information about LMS.
         """
-        if self._n_tensors == 0:
-            self._log_info("n_tensors: all tensors")
-        else:
-            self._log_info("n_tensors: {}".format(self._n_tensors))
+        self._log_info("threshold: {}".format(self._threshold))
         self._log_info("lb: {}".format(self._lb))
 
     def _connect_ops(self, src_op, dest_op, remap_inputs=False,

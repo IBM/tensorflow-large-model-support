@@ -24,7 +24,7 @@ class LMSKerasCallback(Callback):
     during Keras training / fit by adding swap operations.
     """
 
-    def __init__(self, optimizer_scopes_override=None, **kwargs):
+    def __init__(self, **kwargs):
         """Create an LMSKerasCallback object to edit the graph for
            supporting large model tensor swapping when using TensorFlow Keras.
 
@@ -38,18 +38,11 @@ class LMSKerasCallback(Callback):
                   because the graph is obtained automatically by the
                   Keras callback during the set_model method.
         """
-        self._optimizer_scopes = optimizer_scopes_override
         self._lms_args = kwargs
         self._lms_args.pop('graph', None)
 
     def set_model(self, model):
         self.model = model
-        optimizer_scopes = self._optimizer_scopes
-        if not self._optimizer_scopes:
-            optimizer_name = self.model.optimizer.__class__.__name__
-            optimizer_scopes = {'training/'+optimizer_name+'/gradients'}
-
-        lmsMod = LMS(optimizer_scopes,
-                     graph=ops.get_default_graph(),
+        lmsMod = LMS(graph=ops.get_default_graph(),
                      **self._lms_args)
         lmsMod.run()

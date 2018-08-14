@@ -151,7 +151,7 @@ def main(unused_argv):
 
   # Hook for Large Model Support
   from lms import LMSHook
-  lms_hook = LMSHook({'adam_optimizer'}, lb=3, debug=True)
+  lms_hook = LMSHook(lb=3, debug=True)
 
   mnist_classifier.train(
       input_fn=train_input_fn,
