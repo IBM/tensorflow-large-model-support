@@ -153,7 +153,7 @@ def main(_):
   # Enable Large Model Support
   from lms import LMS
   lms_model = LMS(excl_scopes = {'loss', 'accuracy', 'dropout'},
-                  lb=3)
+                  lb=3, threshold=50)
   lms_model.run(tf.get_default_graph())
 
   graph_location = tempfile.mkdtemp()
@@ -163,7 +163,7 @@ def main(_):
 
   with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
-    for i in range(20000):
+    for i in range(5):
       batch = mnist.train.next_batch(50)
       if i % 100 == 0:
         train_accuracy = accuracy.eval(feed_dict={

@@ -42,8 +42,9 @@ class LMS(object):
     backward operations are candidates for swapping. The `LMS` object will
     automatically find these tensors.
 
-    Swapping is done by cutting the link between a forward operation and
-    its backward operation, then replacing the link by inserting `identity`
+    Swapping is done by cutting the link between two operations whose
+    topological-sort distance between them is greater than a given
+    `threshold`, then replacing the link by inserting `identity`
     operations on the host. In theory, this procedure does not have any
     effect on the training convergence as well as inference task.
     """
@@ -74,11 +75,11 @@ class LMS(object):
             backward phase at least `lb` nodes before it in the graph.
             Default `1`.
           ub: upper-bound value for LMS. Default `10000`.
-          threshold: If the  topological-sort distance between the consuming 
+          threshold: if the topological-sort distance between the consuming
             operation and generating operation of a tensor is greater than
             `threshold`, then swap the tensor. Default `0`.
           debug: debug mode for LMS. Default `False`.
-          debug_level: Debug level for LMS (1 or 2). Default `1`.
+          debug_level: debug level for LMS (1 or 2). Default `1`.
           cpu_device: the device we would like swap tensors to.
         """
         self._graph = graph
@@ -91,7 +92,7 @@ class LMS(object):
         self._threshold = threshold
 
         # Operations with these types will be ignored
-        self._excl_types |= {'Const', 'VariableV2', 'Placeholder'}
+        self._excl_types |= {'Const', 'VariableV2', 'Placeholder', 'Identity'}
 
         self._excl_ops = set()
         self._incl_ops = set()
@@ -215,7 +216,7 @@ class LMS(object):
             next_ops = set()
             for t in src_op.outputs:
                 frontier_ops = set(util.get_consuming_ops(t))
-                next_ops |= frontier_ops - self._added_ops
+                next_ops |= frontier_ops
 
             # do action for src_op
             self._insert_swap_nodes(src_op)
@@ -264,6 +265,10 @@ class LMS(object):
         if self._incl_ops:
             if src_op not in self._incl_ops:
                 return
+
+        # do not deal with added ops (swap-out, swap-in ops)
+        if src_op in self._added_ops:
+            return
 
         for t in src_op.outputs:
             # swap branch ops if they are far enough (depending on threshold)
