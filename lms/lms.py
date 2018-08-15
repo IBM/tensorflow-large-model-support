@@ -23,12 +23,6 @@ from tensorflow.python.ops import array_ops
 import time
 from six.moves import queue as Queue
 from lms import topos
-from enum import Enum
-
-
-class CTRLD_Strategy(Enum):
-    CHAIN_RULE = 1
-    DIRECT_ORDER = 2
 
 
 class LMS(object):
