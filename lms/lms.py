@@ -49,6 +49,7 @@ class LMS(object):
                  incl_types=set(),
                  lb=1, ub=10000,
                  threshold=5,
+                 group_distance=5,
                  debug=False,
                  debug_level=1,
                  cpu_device="/cpu:0"):
@@ -70,8 +71,10 @@ class LMS(object):
             Default `1`.
           ub: upper-bound value for LMS. Default `10000`.
           threshold: if the topological-sort distance between the consuming
-            operation and generating operation of a tensor is greater than
-            `threshold`, then swap the tensor. Default `0`.
+            operation and generating operation of a tensor is greater (>) than
+            `threshold`, then trigger swapping the tensor. Default `0`.
+          group_distance: consuming operations whose distances among them are
+            within `group_distance` share the same swap-in operation.
           debug: debug mode for LMS. Default `False`.
           debug_level: debug level for LMS (1 or 2). Default `1`.
           cpu_device: the device we would like swap tensors to.
@@ -84,6 +87,7 @@ class LMS(object):
         self._lb = lb  # lowerbound
         self._ub = ub  # upperbound
         self._threshold = threshold
+        self._group_distance = group_distance
 
         # Operations with these types will be ignored
         self._excl_types |= {'Const', 'VariableV2', 'Placeholder', 'Identity'}
@@ -225,23 +229,29 @@ class LMS(object):
 
             closed_set.add(src_op)
 
-    def _get_by_threshold(self, op, ts, threshold=0):
-        """Get ops whose distance to `op` is greater than `threshold`.
+    def _groupby(self, ops, limit=5):
+        ops_ords = [(op,self._get_order(op)) for op in ops]
+        x = sorted([i[1] for i in ops_ords])
+        xs = [(i, i) for i in x]
 
-        Args:
-          op: a `tf.Operation`.
-          ts: a `tf.Tensor`.
-          threshold: an integer.
+        ys = [xs[0]]
+        for i in range(1, len(xs)):
+            last = ys[-1]
+            curr = xs[i]
+            if (curr[0] - last[1] <= limit):
+                last = (last[0], curr[1])
+                ys[-1] = last
+            else:
+                ys.append(curr)
 
-        Return:
-          A set of `tf.Operation`.
-        """
-        frontier_ops = set(util.get_consuming_ops(ts))
-        op_order = self._topo_sort.get_order(op)
-        ops = {o
-               for o in frontier_ops
-               if (self._topo_sort.get_order(o) - op_order > threshold)}
-        return ops
+        zs = []
+        for y in ys:
+            gs = set()
+            gs = {op[0]
+                  for op in ops_ords
+                  if (op[1] >= y[0] and op[1] <= y[1])}
+            zs.append(gs)
+        return zs
 
     def _insert_swap_nodes(self, src_op):
         """Insert swapin and swapout ops for the given operation into the graph.
@@ -266,15 +276,18 @@ class LMS(object):
         if src_op in self._added_ops:
             return
 
+        src_op_order = self._get_order(src_op)
         for t in src_op.outputs:
-            # swap branch ops if they are far enough (depending on threshold)
-            candidates = self._get_by_threshold(src_op, t, self._threshold)
-
-            if not candidates:
+            # candidates are ops whose distance to `src_op` is greater then threshold
+            cands = [
+                op
+                for op in util.get_consuming_ops(t)
+                if (self._get_order(op) - src_op_order > self._threshold)]
+            if not cands:
                 continue
 
             self._log_info("Operation: {}, order {}, type {}".format(
-                src_op.name, self._topo_sort.get_order(src_op),
+                src_op.name, self._get_order(src_op),
                 src_op.type), 1)
 
             # create swap_out node only if there exists a real dest. operation
@@ -283,12 +296,18 @@ class LMS(object):
             self._added_ops.add(swapout_op)
 
             # create swap_in nodes
-            for dest_op in candidates:
+            # group near candidates
+            cands_grp = self._groupby(cands, self._group_distance)
+
+            for dest_ops in cands_grp:
                 # swap_in op
-                swapin_op = self._add_swapin(swapout_op, dest_op, t)
+                swapin_op = self._add_swapin(swapout_op, dest_ops, t)
                 self._swapin_tensors = self._swapin_tensors + 1
                 self._added_ops.add(swapin_op)
                 # control dependency -> swap_in
+                ops_ords = [(op,self._get_order(op)) for op in dest_ops]
+                x = sorted([i[1] for i in ops_ords])[0]  # the earliest op
+                dest_op = [op[0] for op in ops_ords if op[1] == x][0]
                 self._add_control_dependency(src_op, dest_op, swapin_op)
 
     def _add_swapout(self, src_op, ts0):
@@ -328,10 +347,10 @@ class LMS(object):
 
         return swap_out.op
 
-    def _add_swapin(self, swapout_op, dest_op, ts0):
+    def _add_swapin(self, swapout_op, dest_ops, ts0):
         """Add a swapin operation to the graph. The swapin ops reads
-        the output tensor of `swapout_op` and passes it to `dest_op`,
-        replacing the input tensor `ts0` of `dest_op`.
+        the output tensor of `swapout_op` and passes it to `dest_ops`,
+        replacing the input tensors `ts0` of `dest_ops`.
 
         This method does an in-place modification to the graph.
 
@@ -347,7 +366,8 @@ class LMS(object):
 
         Args:
           swapout_op: a `tf.Operation` that swapped out the tensor `ts0`.
-          dest_op: a `tf.Operation` that will consume the output tensor of `swapout_op`.
+          dest_ops: a set of `tf.Operation` that will consume the output 
+                    tensor of `swapout_op`.
           ts0: a `tf.Tensor` being the original input tensor of `dest_op`.
 
         Return:
@@ -359,32 +379,31 @@ class LMS(object):
         # Connect: swap_out -> swap_in
         self._connect_ops(swapout_op, swap_in.op)
 
-        # Connect: swap_in -> dest
-        dest_svg = ge.sgv(dest_op, graph=self._graph)
-        input_idx = dest_svg.input_index(ts0)
-        self._connect_ops(swap_in.op, dest_op,
-                          remap_inputs=True, idx=input_idx)
+        # Connect: swap_in -> dest_ops
+        for dest_op in dest_ops:
+            dest_svg = ge.sgv(dest_op, graph=self._graph)
+            input_idx = dest_svg.input_index(ts0)
+            self._connect_ops(swap_in.op, dest_op,
+                              remap_inputs=True, idx=input_idx)
+            self._log_info("Operation {} (order {}) consumes {}".format(
+                dest_op.name, self._get_order(dest_op), ts0.name), 1)
         self._excl_ops.add(swap_in.op)
-
-        self._log_info("Consuming op {} (order {}) swaps in {}".format(
-            dest_op.name, self._topo_sort.get_order(dest_op),
-            ts0.name), 1)
 
         return swap_in.op
 
-    def _add_control_dependency(self, fw_op, bw_op, swapin_op):
+    def _add_control_dependency(self, src_op, dest_op, swapin_op):
         """Find and add a control dependency to the graph.
 
         This method does an in-place modification to the graph.
 
         Args:
-          fw_op: a `tf.Operation`.
-          bw_op: a `tf.Operation`.
+          src_op: a `tf.Operation`.
+          dest_op: a `tf.Operation`.
           swapin_op: a `tf.Operation`.
         """
         # if lb is out of range, reset it to make sure
         # that a control dependency op will be found
-        re = self._do_direct_order(fw_op, bw_op, self._lb, self._ub)
+        re = self._do_direct_order(src_op, dest_op, self._lb, self._ub)
 
         ctrld_op = re[0]
         ctrld_order = re[1]
@@ -396,7 +415,7 @@ class LMS(object):
         else:
             self._log_info(
                 "No control dependency op needed for swap in of op {}.".format(
-                    fw_op.name), 1)
+                    src_op.name), 1)
 
     def _do_direct_order(self, fw_op, src_op, lower_b, upper_b):
         """Find a control dependency operation using topological sort.
@@ -420,8 +439,8 @@ class LMS(object):
         result_ops = set()
 
         # offset ordering
-        fw_order = self._topo_sort.get_order(fw_op)
-        src_order = self._topo_sort.get_order(src_op)
+        fw_order = self._get_order(fw_op)
+        src_order = self._get_order(src_op)
 
         range_ub = src_order - lower_b
         range_lb = max([src_order - upper_b, fw_order]) + 1
@@ -446,6 +465,9 @@ class LMS(object):
             return (ctrld_op, ctrld_order)
         else:
             return (None, -1)
+
+    def _get_order(self, op):
+        return self._topo_sort.get_order(op)
 
     def _log_info(self, message, level=0):
         """Log debug information.
