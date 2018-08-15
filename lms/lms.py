@@ -302,6 +302,7 @@ class LMS(object):
 
             # create swap_out node only if there exists a real dest. operation
             swapout_op = self._add_swapout(src_op, t)
+            ge.add_control_inputs(swapout_op, src_op)
             self._swapout_tensors = self._swapout_tensors + 1
             self._added_ops.add(swapout_op)
 
