@@ -86,7 +86,7 @@ _incl_types_ :: a set of types for operations whose tensors will be swapped out 
 
 _swapout_threshold_: if the topological-sort distance between the consuming operation and generating operation of a tensor is greater (>) than `swapout_threshold`, then trigger swapping the tensor. Default `-1` (auto mode).
 
-_swapin_groupby_: consuming operations whose distances among them are within `swapin_groupby` share the same swap-in operation.
+_swapin_groupby_: consuming operations whose distances among them are within `swapin_groupby` share the same swap-in operation. Default `5`.
 
 _swapin_ahead_: lower-bound value for LMS. A tensor will be swapped in during the backward phase at least `swapin_ahead` nodes before it in the graph. Default `-1` (auto mode).
 
