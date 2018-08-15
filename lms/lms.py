@@ -230,6 +230,16 @@ class LMS(object):
             closed_set.add(src_op)
 
     def _groupby(self, ops, limit=5):
+        """Group `ops` into groups so that topological distance between
+        two consecutive ops in a group is within `limit`.
+
+        Args:
+          ops: a set of `tf.Operation`.
+          limit: a threshold
+
+        Return:
+          A list of sets of `tf.Operation`.
+        """
         ops_ords = [(op,self._get_order(op)) for op in ops]
         x = sorted([i[1] for i in ops_ords])
         xs = [(i, i) for i in x]
