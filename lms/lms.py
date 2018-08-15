@@ -47,9 +47,9 @@ class LMS(object):
                  incl_scopes=set(),
                  excl_types=set(),
                  incl_types=set(),
-                 lb=1, ub=10000,
-                 threshold=5,
-                 group_distance=5,
+                 swapout_threshold=5,
+                 swapin_groupby=5,
+                 swapin_ahead=1,
                  debug=False,
                  debug_level=1,
                  cpu_device="/cpu:0"):
@@ -66,15 +66,14 @@ class LMS(object):
             swapped out to the host. Default `empty`.
           incl_types: a set of types for operations whose tensors will be
             swapped out to the host. Default `empty`.
-          lb: lower-bound value for LMS. A tensor will be swapped in during the
-            backward phase at least `lb` nodes before it in the graph.
-            Default `1`.
-          ub: upper-bound value for LMS. Default `10000`.
-          threshold: if the topological-sort distance between the consuming
+          swapout_threshold: if the topological-sort distance between the consuming
             operation and generating operation of a tensor is greater (>) than
-            `threshold`, then trigger swapping the tensor. Default `0`.
-          group_distance: consuming operations whose distances among them are
-            within `group_distance` share the same swap-in operation.
+            `swapout_threshold`, then trigger swapping the tensor. Default `0`.
+          swapin_groupby: consuming operations whose distances among them are
+            within `swapin_groupby` share the same swap-in operation.
+          swapin_ahead: lower-bound value for LMS. A tensor will be swapped in during the
+            backward phase at least `swapin_ahead` nodes before it in the graph.
+            Default `1`.
           debug: debug mode for LMS. Default `False`.
           debug_level: debug level for LMS (1 or 2). Default `1`.
           cpu_device: the device we would like swap tensors to.
@@ -84,13 +83,15 @@ class LMS(object):
         self._incl_scopes = incl_scopes
         self._excl_types = excl_types
         self._incl_types = incl_types
-        self._lb = lb  # lowerbound
-        self._ub = ub  # upperbound
-        self._threshold = threshold
-        self._group_distance = group_distance
+
+        self._swapout_threshold = swapout_threshold
+        self._swapin_groupby = swapin_groupby
+        self._swapin_ahead = swapin_ahead
 
         # Operations with these types will be ignored
-        self._excl_types |= {'Const', 'VariableV2', 'Placeholder', 'Identity'}
+        self._excl_types |= {'Const', 'Identity'}
+        self._excl_types |= {'Placeholder'}  # input data
+        self._excl_types |= {'VariableV2'}  # learnable parameters
 
         self._excl_ops = set()
         self._incl_ops = set()
@@ -187,7 +188,6 @@ class LMS(object):
 
         self._do_action(all_ops)
 
-        # check the validation of the new model
         self._log_info("Added {} ops into the model".format(
             len(self._added_ops)))
         self._log_info(
@@ -288,11 +288,11 @@ class LMS(object):
 
         src_op_order = self._get_order(src_op)
         for t in src_op.outputs:
-            # candidates are ops whose distance to `src_op` is greater then threshold
+            # candidates are ops whose distance to `src_op` is greater than threshold
             cands = [
                 op
                 for op in util.get_consuming_ops(t)
-                if (self._get_order(op) - src_op_order > self._threshold)]
+                if (self._get_order(op) - src_op_order > self._swapout_threshold)]
             if not cands:
                 continue
 
@@ -308,7 +308,7 @@ class LMS(object):
 
             # create swap_in nodes
             # group near candidates
-            cands_grp = self._groupby(cands, self._group_distance)
+            cands_grp = self._groupby(cands, self._swapin_groupby)
 
             for dest_ops in cands_grp:
                 # swap_in op
@@ -412,9 +412,7 @@ class LMS(object):
           dest_op: a `tf.Operation`.
           swapin_op: a `tf.Operation`.
         """
-        # if lb is out of range, reset it to make sure
-        # that a control dependency op will be found
-        re = self._do_direct_order(src_op, dest_op, self._lb, self._ub)
+        re = self._do_direct_order(src_op, dest_op, self._swapin_ahead)
 
         ctrld_op = re[0]
         ctrld_order = re[1]
@@ -428,18 +426,15 @@ class LMS(object):
                 "No control dependency op needed for swap in of op {}.".format(
                     src_op.name), 1)
 
-    def _do_direct_order(self, fw_op, src_op, lower_b, upper_b):
+    def _do_direct_order(self, fw_op, src_op, distance):
         """Find a control dependency operation using topological sort.
 
         Args:
           fw_op: a `tf.Operation` that has a tensor swapped out.
           bw_op: a `tf.Operation` that consumes a tensor swapped in.
-          lower_b: an `integer`. The distance in the topological order
+          distance: an `integer`. The distance in the topological order
             between `bw_op` and a candidate for control dependency ops
-            must be greater than `lower_b`.
-          upper_b: an `integer`. The distance in the topological order
-            between `bw_op` and a candidate for control dependency ops
-            must be smaller than `upper_b`
+            must be greater than `distance`.
 
         Return:
           A tuple of (`tf.Operation`, an `integer`). The first item is
@@ -453,8 +448,8 @@ class LMS(object):
         fw_order = self._get_order(fw_op)
         src_order = self._get_order(src_op)
 
-        range_ub = src_order - lower_b
-        range_lb = max([src_order - upper_b, fw_order]) + 1
+        range_ub = src_order - distance
+        range_lb = fw_order + 1
 
         ctrld_order = -1
         for i in reversed(range(range_lb, range_ub)):
@@ -495,8 +490,9 @@ class LMS(object):
     def _print_configuration(self):
         """Print configuration information about LMS.
         """
-        self._log_info("threshold: {}".format(self._threshold))
-        self._log_info("lb: {}".format(self._lb))
+        self._log_info("swapout_threshold: {}".format(self._swapout_threshold))
+        self._log_info("swapin_groupby: {}".format(self._swapin_groupby))
+        self._log_info("swapin_ahead: {}".format(self._swapin_ahead))
 
     def _connect_ops(self, src_op, dest_op, remap_inputs=False,
                      remap_outputs=False, idx=None, disconnect_first=False):
