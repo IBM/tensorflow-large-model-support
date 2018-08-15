@@ -47,7 +47,7 @@ class LMS(object):
                  incl_scopes=set(),
                  excl_types=set(),
                  incl_types=set(),
-                 swapout_threshold=5,
+                 swapout_threshold=-1,
                  swapin_groupby=5,
                  swapin_ahead=-1,
                  debug=False,
@@ -68,7 +68,8 @@ class LMS(object):
             swapped out to the host. Default `empty`.
           swapout_threshold: if the topological-sort distance between the consuming
             operation and generating operation of a tensor is greater (>) than
-            `swapout_threshold`, then trigger swapping the tensor. Default `0`.
+            `swapout_threshold`, then trigger swapping the tensor.
+            Default `-1` (auto mode).
           swapin_groupby: consuming operations whose distances among them are
             within `swapin_groupby` share the same swap-in operation.
           swapin_ahead: lower-bound value for LMS. A tensor will be swapped in during the
@@ -165,11 +166,9 @@ class LMS(object):
                              ' provided.')
 
         self._log_info("Editing model for LMS")
-        self._print_configuration()
         start_time = time.time()
 
         all_ops = ge.make_list_of_op(self._graph)
-
         self._log_info(
             "The graph has {} ops in total".format(len(all_ops), 1))
 
@@ -189,6 +188,12 @@ class LMS(object):
             self._log_info("[{}]: {}".format(
                 i, [op.name for op in self._topo_sort.get_ops(i)]), 1)
 
+        # roughly estimate swapin_threshold in auto mode
+        if self._swapout_threshold < 0:
+            self._log_info("Use auto mode for setting swapout_threshold")
+            self._swapout_threshold = self._topo_sort.size//2
+
+        self._print_configuration()
         self._do_action(all_ops)  # add swapout/swapin ops
         self._add_control_dependencies()  # add ctrl. dependencies
 
