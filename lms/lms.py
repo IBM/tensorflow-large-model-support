@@ -49,7 +49,7 @@ class LMS(object):
                  incl_types=set(),
                  swapout_threshold=5,
                  swapin_groupby=5,
-                 swapin_ahead=1,
+                 swapin_ahead=-1,
                  debug=False,
                  debug_level=1,
                  cpu_device="/cpu:0"):
@@ -73,7 +73,7 @@ class LMS(object):
             within `swapin_groupby` share the same swap-in operation.
           swapin_ahead: lower-bound value for LMS. A tensor will be swapped in during the
             backward phase at least `swapin_ahead` nodes before it in the graph.
-            Default `1`.
+            Default `-1` (auto mode).
           debug: debug mode for LMS. Default `False`.
           debug_level: debug level for LMS (1 or 2). Default `1`.
           cpu_device: the device we would like swap tensors to.
@@ -108,6 +108,9 @@ class LMS(object):
 
         # store a dictionary of visited ops to avoid multiple visits
         self._ops_dict = {}
+
+        # store information to be used to adding control dependencies
+        self._ops_triples = []  # [(src_op, dest_op, swapin_op)]
 
     def _filter_scopes_and_types(self, within_ops, scopes, types):
         """Filter out ops that are not in `scopes` and not of `types`.
@@ -186,7 +189,8 @@ class LMS(object):
             self._log_info("[{}]: {}".format(
                 i, [op.name for op in self._topo_sort.get_ops(i)]), 1)
 
-        self._do_action(all_ops)
+        self._do_action(all_ops)  # add swapout/swapin ops
+        self._add_control_dependencies()  # add ctrl. dependencies
 
         self._log_info("Added {} ops into the model".format(
             len(self._added_ops)))
@@ -195,6 +199,7 @@ class LMS(object):
                 self._swapout_tensors, self._swapin_tensors))
         self._log_info("Editing model for LMS, took: {} ms".format(
             (time.time()-start_time)*1000))
+
         return self._added_ops
 
     def _do_action(self, src_ops):
@@ -319,7 +324,7 @@ class LMS(object):
                 ops_ords = [(op,self._get_order(op)) for op in dest_ops]
                 x = sorted([i[1] for i in ops_ords])[0]  # the earliest op
                 dest_op = [op[0] for op in ops_ords if op[1] == x][0]
-                self._add_control_dependency(src_op, dest_op, swapin_op)
+                self._ops_triples.append((src_op, dest_op, swapin_op))
 
     def _add_swapout(self, src_op, ts0):
         """Add a swapout operation to the graph to swap out the output tensor `ts0`
@@ -402,7 +407,30 @@ class LMS(object):
 
         return swap_in.op
 
-    def _add_control_dependency(self, src_op, dest_op, swapin_op):
+    def _add_control_dependencies(self):
+        """Add control dependency operations for all consuming ops
+        """
+        if (self._swapin_ahead < 0):
+            # The following strategy is to make sure swapins are done in a sequential way
+            # with respect to the topological order of consuming ops
+            x = sorted(self._ops_triples, key=lambda ops: self._get_order(ops[1]))
+            self._add_control_dependency(x[0][0], x[0][1], x[0][2], 1)  # 1 is good?
+
+            lb=self._get_order(x[0][1])
+            last_order=self._get_order(x[0][1])
+            for i in range(1, len(x)):
+                curr_order = self._get_order(x[i][1])
+                if curr_order != last_order:
+                    lb = last_order
+                    last_order = curr_order
+                ahead = curr_order - lb
+                self._add_control_dependency(x[i][0], x[i][1], x[i][2], ahead)
+        else:
+            # Use the user-defined ahead
+            for ops in self._ops_triples:
+                self._add_control_dependency(ops[0], ops[1], ops[2], self._swapin_ahead)
+        
+    def _add_control_dependency(self, src_op, dest_op, swapin_op, ahead):
         """Find and add a control dependency to the graph.
 
         This method does an in-place modification to the graph.
@@ -412,15 +440,15 @@ class LMS(object):
           dest_op: a `tf.Operation`.
           swapin_op: a `tf.Operation`.
         """
-        re = self._do_direct_order(src_op, dest_op, self._swapin_ahead)
+        re = self._do_direct_order(src_op, dest_op, ahead)
 
         ctrld_op = re[0]
         ctrld_order = re[1]
         if ctrld_op:
             ge.add_control_inputs(swapin_op, ctrld_op)
             self._log_info(
-                "Control dependency op {},  order: {}".format(
-                    ctrld_op.name, ctrld_order), 1)
+                "Control dependency op {} (order: {}) for the consuming op {} (order: {})".format(
+                    ctrld_op.name, ctrld_order, dest_op.name, self._get_order(dest_op)), 1)
         else:
             self._log_info(
                 "No control dependency op needed for swap in of op {}.".format(
@@ -492,7 +520,8 @@ class LMS(object):
         """
         self._log_info("swapout_threshold: {}".format(self._swapout_threshold))
         self._log_info("swapin_groupby: {}".format(self._swapin_groupby))
-        self._log_info("swapin_ahead: {}".format(self._swapin_ahead))
+        self._log_info("swapin_ahead: {}".format(
+            "auto mode" if self._swapin_ahead < 0 else self._swapin_ahead))
 
     def _connect_ops(self, src_op, dest_op, remap_inputs=False,
                      remap_outputs=False, idx=None, disconnect_first=False):
