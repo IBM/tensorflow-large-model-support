@@ -14,6 +14,7 @@
 # ==============================================================================
 """LMS
 """
+import tensorflow as tf
 import tensorflow.contrib.graph_editor as ge
 from tensorflow.contrib.graph_editor import util
 from tensorflow.python.platform import tf_logging
@@ -298,6 +299,11 @@ class LMS(object):
 
         src_op_order = self._get_order(src_op)
         for t in src_op.outputs:
+            # do not swap 1-dimension or unknown shape tensors. They are often small.
+            ndims = t.shape.ndims
+            if ndims is None or ndims <=1:
+                continue
+
             # candidates are ops whose distance to `src_op` is greater than threshold
             cands = [
                 op
@@ -306,7 +312,7 @@ class LMS(object):
             if not cands:
                 continue
 
-            self._log_info("Operation: {}, order {}, type {}".format(
+            self._log_info("Operation: {}, order: {}, type: {}".format(
                 src_op.name, self._get_order(src_op),
                 src_op.type), 1)
 
@@ -363,8 +369,8 @@ class LMS(object):
         self._connect_ops(src_op, swap_out.op, remap_outputs=True,
                           idx=src_out_idx)
         self._excl_ops.add(swap_out.op)
-        self._log_info("Tensor {} will be placed on {}".format(
-            ts0.name, self._cpu_device), 1)
+        self._log_info("Tensor {} (shape: {}) will be placed on {}".format(
+            ts0.name, ts0.shape, self._cpu_device), 1)
 
         return swap_out.op
 
@@ -406,7 +412,7 @@ class LMS(object):
             input_idx = dest_svg.input_index(ts0)
             self._connect_ops(swap_in.op, dest_op,
                               remap_inputs=True, idx=input_idx)
-            self._log_info("Operation {} (order {}) consumes {}".format(
+            self._log_info("Operation {} (order: {}) consumes {}".format(
                 dest_op.name, self._get_order(dest_op), ts0.name), 1)
         self._excl_ops.add(swap_in.op)
 
