@@ -152,9 +152,8 @@ def main(_):
 
   # Enable Large Model Support
   from lms import LMS
-  lms_model = LMS({'adam_optimizer'},
-                  excl_scopes = {'loss', 'accuracy', 'dropout'},
-                  lb=3)
+  lms_model = LMS(excl_scopes={'loss', 'accuracy', 'dropout'},
+                  swapout_threshold=50, swapin_ahead=3)
   lms_model.run(tf.get_default_graph())
 
   graph_location = tempfile.mkdtemp()
