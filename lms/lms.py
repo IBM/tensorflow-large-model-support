@@ -50,6 +50,7 @@ class LMS(object):
                  swapout_threshold=-1,
                  swapin_groupby=5,
                  swapin_ahead=-1,
+                 sync_mode=False,
                  debug=False,
                  debug_level=1,
                  cpu_device="/cpu:0"):
@@ -66,15 +67,17 @@ class LMS(object):
             swapped out to the host. Default `empty`.
           incl_types: a set of types for operations whose tensors will be
             swapped out to the host. Default `empty`.
-          swapout_threshold: if the topological-sort distance between the consuming
-            operation and generating operation of a tensor is greater (>) than
-            `swapout_threshold`, then trigger swapping the tensor.
-            Default `-1` (auto mode).
+          swapout_threshold: if the topological-sort distance between the
+            consuming operation and generating operation of a tensor is
+            greater (>) than `swapout_threshold`, then trigger swapping the
+            tensor. Default `-1` (auto mode).
           swapin_groupby: consuming operations whose distances among them are
             within `swapin_groupby` share the same swap-in operation.
-          swapin_ahead: lower-bound value for LMS. A tensor will be swapped in during the
-            backward phase at least `swapin_ahead` nodes before it in the graph.
-            Default `-1` (auto mode).
+          swapin_ahead: lower-bound value for LMS. A tensor will be swapped in
+            during the backward phase at least `swapin_ahead` nodes before it
+            in the graph. Default `-1` (auto mode).
+          sync_mode: whether overlap data transfer and kernel computation
+            or not. Default `False`.
           debug: debug mode for LMS. Default `False`.
           debug_level: debug level for LMS (1 or 2). Default `1`.
           cpu_device: the device we would like swap tensors to.
@@ -88,6 +91,7 @@ class LMS(object):
         self._swapout_threshold = swapout_threshold
         self._swapin_groupby = swapin_groupby
         self._swapin_ahead = swapin_ahead
+        self._sync_mode = sync_mode
 
         # Operations with these types will be ignored
         self._excl_types |= {'Const', 'Identity'}
@@ -195,7 +199,8 @@ class LMS(object):
 
         self._print_configuration()
         self._do_action(all_ops)  # add swapout/swapin ops
-        self._add_control_dependencies()  # add ctrl. dependencies
+        if not self._sync_mode:
+            self._add_control_dependencies()  # add ctrl. dependencies
 
         self._log_info("Added {} ops into the model".format(
             len(self._added_ops)))
@@ -305,9 +310,10 @@ class LMS(object):
 
             # candidates are ops whose distance to `src_op` is
             # greater than threshold
+            consuming_ops = util.get_consuming_ops(t)
             cands = [
                 op
-                for op in util.get_consuming_ops(t)
+                for op in consuming_ops
                 if self._get_order(op) - src_op_order > self._swapout_threshold
             ]
             if not cands:
@@ -322,6 +328,9 @@ class LMS(object):
             ge.add_control_inputs(swapout_op, src_op)
             self._swapout_tensors = self._swapout_tensors + 1
             self._added_ops.add(swapout_op)
+            if self._sync_mode:
+                for op in consuming_ops:
+                    ge.add_control_inputs(op, swapout_op)
 
             # create swap_in nodes
             # group near candidates
@@ -336,7 +345,15 @@ class LMS(object):
                 ops_ords = [(op, self._get_order(op)) for op in dest_ops]
                 x = sorted([i[1] for i in ops_ords])[0]  # the earliest op
                 dest_op = [op[0] for op in ops_ords if op[1] == x][0]
-                self._ops_triples.append((src_op, dest_op, swapin_op))
+                if self._sync_mode:
+                    ctrl_ops = set()
+                    for in_t in dest_op.inputs:
+                        ctrl_ops |= set(util.get_generating_ops(in_t))
+                    ctrl_ops.discard(swapin_op)
+                    for op in ctrl_ops:
+                        ge.add_control_inputs(swapin_op, op)
+                else:
+                    self._ops_triples.append((src_op, dest_op, swapin_op))
 
     def _add_swapout(self, src_op, ts0):
         """Add a swapout operation to the graph to swap out the output tensor `ts0`
@@ -538,8 +555,12 @@ class LMS(object):
         """
         self._log_info("swapout_threshold: {}".format(self._swapout_threshold))
         self._log_info("swapin_groupby: {}".format(self._swapin_groupby))
-        self._log_info("swapin_ahead: {}".format(
-            "auto mode" if self._swapin_ahead < 0 else self._swapin_ahead))
+        if self._sync_mode:
+            self._log_info(
+                "sync_mode was turned on. swapin_ahead will be ignored")
+        else:
+            self._log_info("swapin_ahead: {}".format(
+                "auto mode" if self._swapin_ahead < 0 else self._swapin_ahead))
 
     def _connect_ops(self, src_op, dest_op, remap_inputs=False,
                      remap_outputs=False, idx=None, disconnect_first=False):

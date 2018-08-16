@@ -90,6 +90,8 @@ _swapin_groupby_: consuming operations whose distances among them are within `sw
 
 _swapin_ahead_: lower-bound value for LMS. A tensor will be swapped in during the backward phase at least `swapin_ahead` nodes before it in the graph. Default `-1` (auto mode).
 
+_sync_mode_: whether overlap data transfer and kernel computation or not. Default `False`.
+
 _debug_ :: Debug mode for LMS. Default `False`.
 
 _debug_level_ :: Debug level for LMS (1 or 2). Default `1`.
