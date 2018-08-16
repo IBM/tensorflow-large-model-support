@@ -14,7 +14,6 @@
 # ==============================================================================
 """LMS
 """
-import tensorflow as tf
 import tensorflow.contrib.graph_editor as ge
 from tensorflow.contrib.graph_editor import util
 from tensorflow.python.platform import tf_logging
@@ -251,7 +250,7 @@ class LMS(object):
         Return:
           A list of sets of `tf.Operation`.
         """
-        ops_ords = [(op,self._get_order(op)) for op in ops]
+        ops_ords = [(op, self._get_order(op)) for op in ops]
         x = sorted([i[1] for i in ops_ords])
         xs = [(i, i) for i in x]
 
@@ -299,16 +298,18 @@ class LMS(object):
 
         src_op_order = self._get_order(src_op)
         for t in src_op.outputs:
-            # do not swap 1-dimension or unknown shape tensors. They are often small.
+            # do not swap 1-dimension or unknown shape tensors.
             ndims = t.shape.ndims
-            if ndims is None or ndims <=1:
+            if ndims is None or ndims <= 1:
                 continue
 
-            # candidates are ops whose distance to `src_op` is greater than threshold
+            # candidates are ops whose distance to `src_op` is
+            # greater than threshold
             cands = [
                 op
                 for op in util.get_consuming_ops(t)
-                if (self._get_order(op) - src_op_order > self._swapout_threshold)]
+                if self._get_order(op) - src_op_order > self._swapout_threshold
+            ]
             if not cands:
                 continue
 
@@ -332,7 +333,7 @@ class LMS(object):
                 self._swapin_tensors = self._swapin_tensors + 1
                 self._added_ops.add(swapin_op)
                 # control dependency -> swap_in
-                ops_ords = [(op,self._get_order(op)) for op in dest_ops]
+                ops_ords = [(op, self._get_order(op)) for op in dest_ops]
                 x = sorted([i[1] for i in ops_ords])[0]  # the earliest op
                 dest_op = [op[0] for op in ops_ords if op[1] == x][0]
                 self._ops_triples.append((src_op, dest_op, swapin_op))
@@ -419,16 +420,19 @@ class LMS(object):
         return swap_in.op
 
     def _add_control_dependencies(self):
-        """Add control dependency operations for all consuming ops
+        """Add control dependency operations for all consuming ops.
         """
         if (self._swapin_ahead < 0):
-            # The following strategy is to make sure swapins are done in a sequential way
-            # with respect to the topological order of consuming ops
-            x = sorted(self._ops_triples, key=lambda ops: self._get_order(ops[1]))
-            self._add_control_dependency(x[0][0], x[0][1], x[0][2], 1)  # 1 is good?
+            # The following strategy is to make sure swapins are done in
+            # a sequential way with respect to the topological order of
+            # consuming ops.
+            x = sorted(self._ops_triples,
+                       key=lambda ops: self._get_order(ops[1]))
+            self._add_control_dependency(
+                x[0][0], x[0][1], x[0][2], 1)  # 1 is good?
 
-            lb=self._get_order(x[0][1])
-            last_order=self._get_order(x[0][1])
+            lb = self._get_order(x[0][1])
+            last_order = self._get_order(x[0][1])
             for i in range(1, len(x)):
                 curr_order = self._get_order(x[i][1])
                 if curr_order != last_order:
@@ -438,8 +442,9 @@ class LMS(object):
                 self._add_control_dependency(x[i][0], x[i][1], x[i][2], ahead)
         else:
             # Use the user-defined ahead
-            for ops in self._ops_triples:
-                self._add_control_dependency(ops[0], ops[1], ops[2], self._swapin_ahead)
+            for op in self._ops_triples:
+                self._add_control_dependency(
+                    op[0], op[1], op[2], self._swapin_ahead)
         
     def _add_control_dependency(self, src_op, dest_op, swapin_op, ahead):
         """Find and add a control dependency to the graph.
