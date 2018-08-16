@@ -506,6 +506,8 @@ class LMS(object):
             return (None, -1)
 
     def _get_order(self, op):
+        """Return the topological order of an operation
+        """
         return self._topo_sort.get_order(op)
 
     def _log_info(self, message, level=0):
