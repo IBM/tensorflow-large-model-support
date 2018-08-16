@@ -55,7 +55,6 @@ class TOPOS(object):
         for op in self._seed_ops:
             open_set.put(op)
 
-        # traversal in the fw phase
         while not open_set.empty():
             src_op = open_set.get()
 
