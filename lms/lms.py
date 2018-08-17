@@ -190,7 +190,7 @@ class LMS(object):
             self._topo_sort.size))
         for i in range(0, self._topo_sort.size):
             self._log_info("[{}]: {}".format(
-                i, [op.name for op in self._topo_sort.get_ops(i)]), 1)
+                i, [op.name for op in self._get_ops_by_order(i)]), 1)
 
         # roughly estimate swapin_threshold in auto mode
         if self._swapout_threshold < 0:
@@ -514,7 +514,7 @@ class LMS(object):
 
         ctrld_order = -1
         for i in reversed(range(range_lb, range_ub)):
-            candidates = self._topo_sort.get_ops(i)
+            candidates = self._get_ops_by_order(i)
             # on the chain rule path
             candidates = {op
                           for op in candidates
@@ -534,9 +534,26 @@ class LMS(object):
             return (None, -1)
 
     def _get_order(self, op):
-        """Return the topological order of an operation
+        """Return the topological order of an operation.
+
+        Args:
+          op: a `tf.Operation`.
+
+        Return:
+          an integer.
         """
         return self._topo_sort.get_order(op)
+
+    def _get_ops_by_order(self, order):
+        """Return a set of ops with the given order.
+        
+        Args:
+          order: an integer.
+
+        Return:
+          a set of `tf.Operation`
+        """
+        return self._topo_sort.get_ops(order)
 
     def _log_info(self, message, level=0):
         """Log debug information.
