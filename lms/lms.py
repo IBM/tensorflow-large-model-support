@@ -117,40 +117,6 @@ class LMS(object):
         # store information to be used to adding control dependencies
         self._ops_triples = []  # [(src_op, dest_op, swapin_op)]
 
-    def _filter_scopes_and_types(self, within_ops, scopes, types):
-        """Filter out ops that are not in `scopes` and not of `types`.
-
-        Args:
-          within_ops: an object convertible to a list of `tf.Operation`.
-          scopes: a list of scope path.
-          types: a list of tf.DataType.
-        Return:
-          A set of `tf.Operation`.
-        """
-        ops = set()
-        for scope in scopes:
-            ops |= set(ge.get_name_scope_ops(within_ops, scope))
-        ops |= {op
-                for op in within_ops
-                if op.type in types}
-        return ops
-
-    def _get_forward_walk_ops(self, op, inclusive=True):
-        """ A wrapper of `tensorflow.contrib.graph_editor.get_forward_walk_ops`
-        """
-        if op in self._ops_dict:
-            if inclusive:
-                return self._ops_dict[op]
-            else:
-                return list(set(self._ops_dict[op]) - {op})
-        else:
-            ret = ge.get_forward_walk_ops(op)
-            self._ops_dict[op] = ret
-            if inclusive:
-                return ret
-            else:
-                return list(set(ret) - {op})
-
     def run(self, graph=None):
         """Edit the graph by adding swapin and swapout ops.
 
@@ -545,6 +511,40 @@ class LMS(object):
             return (ctrld_op, ctrld_order)
         else:
             return (None, -1)
+
+    def _filter_scopes_and_types(self, within_ops, scopes, types):
+        """Filter out ops that are not in `scopes` and not of `types`.
+
+        Args:
+          within_ops: an object convertible to a list of `tf.Operation`.
+          scopes: a list of scope path.
+          types: a list of tf.DataType.
+        Return:
+          A set of `tf.Operation`.
+        """
+        ops = set()
+        for scope in scopes:
+            ops |= set(ge.get_name_scope_ops(within_ops, scope))
+        ops |= {op
+                for op in within_ops
+                if op.type in types}
+        return ops
+
+    def _get_forward_walk_ops(self, op, inclusive=True):
+        """ A wrapper of `tensorflow.contrib.graph_editor.get_forward_walk_ops`
+        """
+        if op in self._ops_dict:
+            if inclusive:
+                return self._ops_dict[op]
+            else:
+                return list(set(self._ops_dict[op]) - {op})
+        else:
+            ret = ge.get_forward_walk_ops(op)
+            self._ops_dict[op] = ret
+            if inclusive:
+                return ret
+            else:
+                return list(set(ret) - {op})
 
     def _get_order(self, op):
         """Return the topological order of an operation.
