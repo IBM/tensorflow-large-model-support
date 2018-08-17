@@ -440,29 +440,42 @@ class LMS(object):
         """Add control dependency operations for all consuming ops.
         """
         if (self._swapin_ahead < 0):
-            # The following strategy is to make sure swapins are done in
-            # a sequential way with respect to the topological order of
-            # consuming ops.
-            x = sorted(self._ops_triples,
-                       key=lambda ops: self._get_order(ops[1]))
-            self._add_control_dependency(
-                x[0][0], x[0][1], x[0][2], 1)  # 1 is good?
-
-            lb = self._get_order(x[0][1])
-            last_order = self._get_order(x[0][1])
-            for i in range(1, len(x)):
-                curr_order = self._get_order(x[i][1])
-                if curr_order != last_order:
-                    lb = last_order
-                    last_order = curr_order
-                ahead = curr_order - lb
-                self._add_control_dependency(x[i][0], x[i][1], x[i][2], ahead)
+            self._sequential_strategy()
         else:
             # Use the user-defined ahead
             for op in self._ops_triples:
                 self._add_control_dependency(
                     op[0], op[1], op[2], self._swapin_ahead)
-        
+
+    def _sequential_strategy(self):
+        """This strategy is to make sure swapins are done in
+        a sequential way with respect to the topological order of
+        consuming ops.
+        """
+        x = sorted(self._ops_triples,
+                   key=lambda ops: self._get_order(ops[1]))
+
+        # a fixed setting for the first swapins.
+        x0_dest_order = self._get_order(x[0][1])
+        ahead = 3
+        k = 0
+        for i in range(0, len(x)):
+            if self._get_order(x[i][1]) == x0_dest_order:
+                self._add_control_dependency(x[i][0], x[i][1], x[i][2], ahead)
+                k = i
+            else:
+                break
+
+        lb = x0_dest_order
+        last_order = lb
+        for i in range(k+1, len(x)):
+            curr_order = self._get_order(x[i][1])
+            if curr_order != last_order:
+                lb = last_order
+                last_order = curr_order
+            ahead = curr_order - lb
+            self._add_control_dependency(x[i][0], x[i][1], x[i][2], ahead)
+
     def _add_control_dependency(self, src_op, dest_op, swapin_op, ahead):
         """Find and add a control dependency to the graph.
 
