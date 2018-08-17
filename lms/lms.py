@@ -105,11 +105,9 @@ class LMS(object):
         self._debug = debug
         self._debug_level = debug_level
 
-        # keep log of tensors on host
-        self._swapout_tensors = 0
-        self._swapin_tensors = 0
-        # added ops
-        self._added_ops = set()
+        # keep the numbers of swap-out/swap-in ops
+        self._swapout_ops = 0
+        self._swapin_ops = 0
 
         # store a dictionary of visited ops to avoid multiple visits
         self._ops_dict = {}
@@ -168,15 +166,13 @@ class LMS(object):
         if not self._sync_mode:
             self._add_control_dependencies()  # add ctrl. dependencies
 
-        self._log_info("Added {} ops into the model".format(
-            len(self._added_ops)))
         self._log_info(
-            "{} tensors will be swapped out, {} tensors will be swapped in".format(
-                self._swapout_tensors, self._swapin_tensors))
+            "Added {} operations to the model".format(
+                self._swapout_ops + self._swapin_ops) + \
+            " ({} swap-out operations and {} swap-in operations)".format(
+                self._swapout_ops, self._swapin_ops))
         self._log_info("Editing model for LMS, took: {} ms".format(
             (time.time()-start_time)*1000))
-
-        return self._added_ops
 
     def _do_action(self, src_ops):
         """Add swapin and swapout ops for ops that are reachable from `src_ops`.
@@ -200,7 +196,18 @@ class LMS(object):
                 next_ops |= frontier_ops
 
             # do action for src_op
-            self._insert_swap_nodes(src_op)
+            # bypass excluded ops
+            if src_op in self._excl_ops:
+                pass
+            elif self._incl_ops:
+                # if inclusive mode is enabled,
+                # only proceed included ops
+                if src_op in self._incl_ops:
+                    self._insert_swap_nodes(src_op)
+                else:
+                    pass
+            else:
+                self._insert_swap_nodes(src_op)
 
             for op in next_ops:
                 if op in closed_set:
@@ -254,19 +261,6 @@ class LMS(object):
         """
         self._log_info("Operation: {}".format(src_op), 2)
 
-        # bypass excluded ops
-        if src_op in self._excl_ops:
-            return
-
-        # if inclusive mode is enabled, only proceed if this op is included
-        if self._incl_ops:
-            if src_op not in self._incl_ops:
-                return
-
-        # do not deal with added ops (swap-out, swap-in ops)
-        if src_op in self._added_ops:
-            return
-
         src_op_order = self._get_order(src_op)
         for t in src_op.outputs:
             # do not swap 1-dimension or unknown shape tensors.
@@ -292,8 +286,8 @@ class LMS(object):
             # create a swap_out node
             swapout_op = self._add_swapout(src_op, t)
             ge.add_control_inputs(swapout_op, src_op)
-            self._swapout_tensors = self._swapout_tensors + 1
-            self._added_ops.add(swapout_op)
+            self._swapout_ops = self._swapout_ops + 1
+            self._excl_ops.add(swapout_op)  # exclusive this op
             if self._sync_mode:
                 for op in consuming_ops:
                     ge.add_control_inputs(op, swapout_op)
@@ -305,8 +299,8 @@ class LMS(object):
             for dest_ops in cands_grp:
                 # swap_in op
                 swapin_op = self._add_swapin(swapout_op, dest_ops, t)
-                self._swapin_tensors = self._swapin_tensors + 1
-                self._added_ops.add(swapin_op)
+                self._swapin_ops = self._swapin_ops + 1
+                self._excl_ops.add(swapin_op)  # exclusive this op
                 # control dependency -> swap_in
                 ops_ords = [(op, self._get_order(op)) for op in dest_ops]
                 x = sorted([i[1] for i in ops_ords])[0]  # the earliest op
