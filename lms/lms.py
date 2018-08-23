@@ -106,8 +106,8 @@ class LMS(object):
         self._debug_level = debug_level
 
         # keep the numbers of swap-out/swap-in ops
-        self._swapout_ops = 0
-        self._swapin_ops = 0
+        self._swapout_ops = set()
+        self._swapin_ops = set()
 
         # store a dictionary of visited ops to avoid multiple visits
         self._ops_dict = {}
@@ -170,9 +170,9 @@ class LMS(object):
 
         self._log_info(
             "Added {} operations to the model".format(
-                self._swapout_ops + self._swapin_ops) + \
+                len(self._swapout_ops) + len(self._swapin_ops)) +
             " ({} swap-out operations and {} swap-in operations)".format(
-                self._swapout_ops, self._swapin_ops))
+                len(self._swapout_ops), len(self._swapin_ops)))
         self._log_info("Editing model for LMS, took: {} ms".format(
             (time.time()-start_time)*1000))
 
@@ -220,43 +220,81 @@ class LMS(object):
             closed_set.add(src_op)
 
     def _sync_ops(self):
-        closed_set = set()
+        """Synchronize computation ops and swapping ops.
+        """
+        self._sync_swapout_ops()
+        self._sync_swapin_ops()
+
+    def _sync_swapout_ops(self):
+        """Once a tensor is produced by an operation, swap it out first, 
+        then execute consuming operations of the tensor
+        """
+        for sw_op in self._swapout_ops:
+            src_op = ge.get_generating_ops(sw_op.inputs)[0]  # only one
+            target_ops = set()
+            for ts in src_op.outputs:
+                target_ops |= set(ge.get_consuming_ops(ts))
+            # do not block the other swap-out/swap-in ops
+            target_ops -= self._swapout_ops
+            target_ops -= self._swapin_ops
+
+            # block computation ops until the swap-out op finishes
+            for op in target_ops:
+                ge.add_control_inputs(op, sw_op)
+
+    def _sync_swapin_ops(self):
+        """While a tensor is swapping in for an operation,
+        block the other operations
+        """
+        closed_dest_set = set()
+        closed_sin_set = set()
         dest_sin_dict = {}
         for (_, dest_op, sin_op) in self._ops_triples:
+            # dest_sin_dict
             if dest_op in dest_sin_dict:
                 ops = dest_sin_dict[dest_op]
                 ops.add(sin_op)
                 dest_sin_dict[dest_op] = ops
             else:
                 dest_sin_dict[dest_op] = {sin_op}
+
         for (_, dest_op, _) in self._ops_triples:
-            if dest_op in closed_set:
+            if dest_op in closed_dest_set:
                 continue
-            closed_set.add(dest_op)
 
             k = self._get_order(dest_op)
             k_ops = self._get_ops_by_order(k)
-            pk_ops = self._get_ops_by_order(k-1)
+            pk_ops = self._get_ops_by_order(k-1)  # previous level
 
             k_ops_sin = {op for op in k_ops if op in dest_sin_dict}
             k_ops_no_sin = k_ops - k_ops_sin
 
-            # sequentialize ops
+            # swap-in ops are triggered once the ops in the previous level finish
             for sin_op in dest_sin_dict[dest_op]:
-                # wait until ops in the previous level finish
                 for op in pk_ops:
                     ge.add_control_inputs(sin_op, op)
-                # wait until ops having no swapin finish
-                for op in k_ops_no_sin:
-                    ge.add_control_inputs(sin_op, op)
+                closed_sin_set.add(sin_op)
+            closed_dest_set.add(dest_op)
+
             # interleave swapping and computation
             curr_op = dest_op
-            # for op in k_ops_sin - {sin_op}:
-            #     sin_ops = dest_sin_dict[op]
-            #     for sin_op in sin_ops:
-            #         ge.add_control_inputs(sin_op, curr_op)
-            #     curr_op = op
-            #     closed_set.add(op)
+            for op in k_ops_sin - {dest_op}:
+                sin_ops = dest_sin_dict[op]
+                if sin_ops <= closed_sin_set:
+                    # all tensors for this op have already swapped in,
+                    # trigger this op
+                    ge.add_control_inputs(op, curr_op)
+                else:
+                    # swap in the remaining tensors for this op
+                    for sin_op in sin_ops - closed_sin_set:
+                        ge.add_control_inputs(sin_op, curr_op)
+                        closed_sin_set.add(sin_op)
+                curr_op = op
+                closed_dest_set.add(op)
+
+            # ops having no swapin are triggered last
+            for op in k_ops_no_sin:
+                ge.add_control_inputs(op, curr_op)
 
     def _groupby(self, ops, limit=5):
         """Group `ops` into groups so that topological distance between
@@ -327,11 +365,8 @@ class LMS(object):
             # create a swap_out node
             swapout_op = self._add_swapout(src_op, t)
             ge.add_control_inputs(swapout_op, src_op)
-            self._swapout_ops = self._swapout_ops + 1
+            self._swapout_ops.add(swapout_op)
             self._excl_ops.add(swapout_op)  # exclusive this op
-            if self._sync_mode:
-                for op in consuming_ops:
-                    ge.add_control_inputs(op, swapout_op)
 
             # create swap_in nodes
             # group near candidates
@@ -340,7 +375,7 @@ class LMS(object):
             for dest_ops in cands_grp:
                 # swap_in op
                 swapin_op = self._add_swapin(swapout_op, dest_ops, t)
-                self._swapin_ops = self._swapin_ops + 1
+                self._swapin_ops.add(swapin_op)
                 self._excl_ops.add(swapin_op)  # exclusive this op
                 # control dependency -> swap_in
                 ops_ords = [(op, self._get_order(op)) for op in dest_ops]
@@ -379,7 +414,6 @@ class LMS(object):
         src_out_idx = src_svg.output_index(ts0)
         self._connect_ops(src_op, swap_out.op, remap_outputs=True,
                           idx=src_out_idx)
-        self._excl_ops.add(swap_out.op)
         self._log_info("Tensor {} (shape: {}) will be placed on {}".format(
             ts0.name, ts0.shape, self._cpu_device), 1)
 
@@ -427,7 +461,6 @@ class LMS(object):
                               remap_inputs=True, idx=input_idx)
             self._log_info("Operation {} (order: {}) consumes {}".format(
                 dest_op.name, self._get_order(dest_op), ts0.name), 1)
-        self._excl_ops.add(swap_in.op)
 
         return swap_in.op
 
