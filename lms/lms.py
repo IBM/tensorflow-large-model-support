@@ -50,7 +50,7 @@ class LMS(object):
                  swapout_threshold=-1,
                  swapin_groupby=5,
                  swapin_ahead=-1,
-                 sync_mode=False,
+                 sync_mode=0,
                  debug=False,
                  debug_level=1,
                  cpu_device="/cpu:0"):
@@ -77,7 +77,8 @@ class LMS(object):
             during the backward phase at least `swapin_ahead` nodes before it
             in the graph. Default `-1` (auto mode).
           sync_mode: whether overlap data transfer and kernel computation
-            or not. Default `False`.
+            or not. Four modes: `0` turn off. `1` only swap-out ops. `2` only
+            swap-inops. `3` both swap-out and swap-in. Default `0`.
           debug: debug mode for LMS. Default `False`.
           debug_level: debug level for LMS (1 or 2). Default `1`.
           cpu_device: the device we would like swap tensors to.
@@ -91,6 +92,8 @@ class LMS(object):
         self._swapout_threshold = swapout_threshold
         self._swapin_groupby = swapin_groupby
         self._swapin_ahead = swapin_ahead
+        if sync_mode not in {0, 1, 2, 3}:
+            raise ValueError('Invalid value for sync_mode')
         self._sync_mode = sync_mode
 
         # Operations with these types will be ignored
@@ -163,10 +166,19 @@ class LMS(object):
 
         self._print_configuration()
         self._do_action(all_ops)  # add swapout/swapin ops
-        if not self._sync_mode:
+
+        if self._sync_mode == 0:  # async mode
             self._add_control_dependencies()  # add ctrl. dependencies
+        elif self._sync_mode == 1:   # sync for swap-out ops only
+            self._sync_swapout_ops()
+            self._add_control_dependencies()  # add ctrl. dependencies
+        elif self._sync_mode == 2:  # sync for swap-in ops only
+            self._sync_swapin_ops()
+        elif self._sync_mode == 3:  # sync for both swap-out and swap-in ops
+            self._sync_swapout_ops()
+            self._sync_swapin_ops()
         else:
-            self._sync_ops()
+            pass
 
         self._log_info(
             "Added {} operations to the model".format(
@@ -218,12 +230,6 @@ class LMS(object):
                     open_set.put(op)
 
             closed_set.add(src_op)
-
-    def _sync_ops(self):
-        """Synchronize computation ops and swapping ops.
-        """
-        self._sync_swapout_ops()
-        self._sync_swapin_ops()
 
     def _sync_swapout_ops(self):
         """Once a tensor is produced by an operation, swap it out first, 
@@ -647,12 +653,22 @@ class LMS(object):
         """
         self._log_info("swapout_threshold: {}".format(self._swapout_threshold))
         self._log_info("swapin_groupby: {}".format(self._swapin_groupby))
-        if self._sync_mode:
+        if self._sync_mode == 1:
             self._log_info(
-                "sync_mode was turned on. swapin_ahead will be ignored")
-        else:
+                "sync_mode was turned on for swap-out ops")
             self._log_info("swapin_ahead: {}".format(
                 "auto mode" if self._swapin_ahead < 0 else self._swapin_ahead))
+        elif self._sync_mode == 2:
+            self._log_info(
+                "sync_mode was turned on for swap-in ops. swapin_ahead will be ignored")
+        elif self._sync_mode == 3:
+            self._log_info(
+                "sync_mode was turned on for both swap-out and swap-in ops. swapin_ahead will be ignored")
+        elif self._sync_mode == 0:
+            self._log_info("swapin_ahead: {}".format(
+                "auto mode" if self._swapin_ahead < 0 else self._swapin_ahead))
+        else:
+            pass
 
     def _connect_ops(self, src_op, dest_op, remap_inputs=False,
                      remap_outputs=False, idx=None, disconnect_first=False):
