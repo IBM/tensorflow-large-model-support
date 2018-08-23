@@ -165,6 +165,8 @@ class LMS(object):
         self._do_action(all_ops)  # add swapout/swapin ops
         if not self._sync_mode:
             self._add_control_dependencies()  # add ctrl. dependencies
+        else:
+            self._sync_ops()
 
         self._log_info(
             "Added {} operations to the model".format(
@@ -216,6 +218,45 @@ class LMS(object):
                     open_set.put(op)
 
             closed_set.add(src_op)
+
+    def _sync_ops(self):
+        closed_set = set()
+        dest_sin_dict = {}
+        for (_, dest_op, sin_op) in self._ops_triples:
+            if dest_op in dest_sin_dict:
+                ops = dest_sin_dict[dest_op]
+                ops.add(sin_op)
+                dest_sin_dict[dest_op] = ops
+            else:
+                dest_sin_dict[dest_op] = {sin_op}
+        for (_, dest_op, _) in self._ops_triples:
+            if dest_op in closed_set:
+                continue
+            closed_set.add(dest_op)
+
+            k = self._get_order(dest_op)
+            k_ops = self._get_ops_by_order(k)
+            pk_ops = self._get_ops_by_order(k-1)
+
+            k_ops_sin = {op for op in k_ops if op in dest_sin_dict}
+            k_ops_no_sin = k_ops - k_ops_sin
+
+            # sequentialize ops
+            for sin_op in dest_sin_dict[dest_op]:
+                # wait until ops in the previous level finish
+                for op in pk_ops:
+                    ge.add_control_inputs(sin_op, op)
+                # wait until ops having no swapin finish
+                for op in k_ops_no_sin:
+                    ge.add_control_inputs(sin_op, op)
+            # interleave swapping and computation
+            curr_op = dest_op
+            # for op in k_ops_sin - {sin_op}:
+            #     sin_ops = dest_sin_dict[op]
+            #     for sin_op in sin_ops:
+            #         ge.add_control_inputs(sin_op, curr_op)
+            #     curr_op = op
+            #     closed_set.add(op)
 
     def _groupby(self, ops, limit=5):
         """Group `ops` into groups so that topological distance between
@@ -305,15 +346,7 @@ class LMS(object):
                 ops_ords = [(op, self._get_order(op)) for op in dest_ops]
                 x = sorted([i[1] for i in ops_ords])[0]  # the earliest op
                 dest_op = [op[0] for op in ops_ords if op[1] == x][0]
-                if self._sync_mode:
-                    ctrl_ops = set()
-                    for in_t in dest_op.inputs:
-                        ctrl_ops |= set(util.get_generating_ops(in_t))
-                    ctrl_ops.discard(swapin_op)
-                    for op in ctrl_ops:
-                        ge.add_control_inputs(swapin_op, op)
-                else:
-                    self._ops_triples.append((src_op, dest_op, swapin_op))
+                self._ops_triples.append((src_op, dest_op, swapin_op))
 
     def _add_swapout(self, src_op, ts0):
         """Add a swapout operation to the graph to swap out the output tensor `ts0`
@@ -379,7 +412,9 @@ class LMS(object):
           A `tf.Operation` newly added to the graph.
         """
         with ops.device(self._cpu_device):
-            swap_in = array_ops.identity(ts0, name="lms/swapin")
+            swap_in = array_ops.identity(
+                ts0,
+                name="lms/swapin_{}".format(ts0.name.replace("/", "_").replace(":", "_")))
 
         # Connect: swap_out -> swap_in
         self._connect_ops(swapout_op, swap_in.op)
