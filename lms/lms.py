@@ -385,47 +385,83 @@ class LMS(object):
         self._log_info("Operation: {}".format(src_op), 2)
 
         src_op_order = self._get_order(src_op)
-        for t in src_op.outputs:
+        ts_dests = {}
+
+        # filter candidates
+        for ts in src_op.outputs:
+            # filter by tensor shape
             # do not swap 1-dimension or unknown shape tensors.
-            ndims = t.shape.ndims
+            ndims = ts.shape.ndims
             if ndims is None or ndims <= 1:
                 continue
 
+            # filter by topological distance
             # candidates are ops whose distance to `src_op` is
             # greater than threshold
-            consuming_ops = util.get_consuming_ops(t)
+            consuming_ops = util.get_consuming_ops(ts)
             cands = [
                 op
                 for op in consuming_ops
                 if self._get_order(op) - src_op_order > self._swapout_threshold
             ]
-            if not cands:
+            if len(cands) == 0:
                 continue
+            else:
+                ts_dests[ts]=cands
 
+        if ts_dests:
             self._log_info("Operation: {}, order: {}, type: {}".format(
                 src_op.name, self._get_order(src_op),
                 src_op.type), 1)
+        else:
+            return
 
-            # create a swap_out node
-            swapout_op = self._add_swapout(src_op, t)
-            ge.add_control_inputs(swapout_op, src_op)
-            self._swapout_ops.add(swapout_op)
-            self._excl_ops.add(swapout_op)  # exclusive this op
+        for ts in ts_dests:
+            # group near candidates by topological distance
+            dests_grp = self._groupby(ts_dests[ts], self._swapin_groupby)
 
-            # create swap_in nodes
-            # group near candidates
-            cands_grp = self._groupby(cands, self._swapin_groupby)
+            # insert swapout and swap-in ops
+            sout, dest_sin = self._insert_swap_nodes_for_ts(
+                src_op, ts, dests_grp)
 
-            for dest_ops in cands_grp:
-                # swap_in op
-                swapin_op = self._add_swapin(swapout_op, dest_ops, t)
-                self._swapin_ops.add(swapin_op)
-                self._excl_ops.add(swapin_op)  # exclusive this op
-                # control dependency -> swap_in
-                ops_ords = [(op, self._get_order(op)) for op in dest_ops]
-                x = sorted([i[1] for i in ops_ords])[0]  # the earliest op
-                dest_op = [op[0] for op in ops_ords if op[1] == x][0]
-                self._ops_triples.append((src_op, dest_op, swapin_op))
+            # keep newly added ops
+            self._swapout_ops.add(sout)
+            self._excl_ops.add(sout)  # exclusive this op
+            for dest, sin in dest_sin:
+                self._swapin_ops.add(sin)
+                self._excl_ops.add(sin)  # exclusive this op
+                self._ops_triples.append((src_op, dest, sin))
+
+    def _insert_swap_nodes_for_ts(self, src_op, ts, targets):
+        """Insert swapin and swapout ops for the given tensor into the graph.
+
+        This method does an in-place modification to the graph.
+
+        Args:
+          src_op: a `tf.Operation`.
+          ts: a `tf.Tensor`, an output of `src_op`.
+          targets: a list of sets of consuming ops of `src_op`.
+
+        Return:
+          A tuple of a swap-out op and a set of pairs of a consuming op and
+          a swap-in op.
+        """
+        # create a swap_out node
+        swapout_op = self._add_swapout(src_op, ts)
+        ge.add_control_inputs(swapout_op, src_op)
+
+        # create swap_in nodes
+        dest_sin = set()
+        for dest_ops in targets:
+            # swap_in op
+            swapin_op = self._add_swapin(swapout_op, dest_ops, ts)
+            # for control dependency
+            ops_ords = [(op, self._get_order(op)) for op in dest_ops]
+            x = sorted([i[1] for i in ops_ords])[0]  # the earliest op
+            dest_op = [op[0] for op in ops_ords if op[1] == x][0]
+            dest_sin.add((dest_op, swapin_op))
+
+        return (swapout_op, dest_sin)
 
     def _add_swapout(self, src_op, ts0):
         """Add a swapout operation to the graph to swap out the output tensor `ts0`
@@ -461,7 +497,7 @@ class LMS(object):
         src_out_idx = src_svg.output_index(ts0)
         self._connect_ops(src_op, swap_out.op, remap_outputs=True,
                           idx=src_out_idx)
-        self._log_info("Tensor {} (shape: {}) will be placed on {}".format(
+        self._log_info("Swap-out: Tensor {} (shape: {}) will be placed on {}".format(
             ts0.name, ts0.shape, self._cpu_device), 1)
 
         return swap_out.op
@@ -507,8 +543,8 @@ class LMS(object):
             input_idx = dest_svg.input_index(ts0)
             self._connect_ops(swap_in.op, dest_op,
                               remap_inputs=True, idx=input_idx)
-            self._log_info("Operation {} (order: {}) consumes {}".format(
-                dest_op.name, self._get_order(dest_op), ts0.name), 1)
+            self._log_info("Swap-in: Tensor {} (shape: {}) for {} (order: {})".format(
+                ts0.name, ts0.shape, dest_op.name, self._get_order(dest_op)), 1)
 
         return swap_in.op
 
@@ -569,7 +605,7 @@ class LMS(object):
         if ctrld_op:
             ge.add_control_inputs(swapin_op, ctrld_op)
             self._log_info(
-                "Control dependency op {} (order: {}) for the consuming op {} (order: {})".format(
+                "Control dependency: {} (order: {}) -> {} (order: {})".format(
                     ctrld_op.name, ctrld_order, dest_op.name, self._get_order(dest_op)), 1)
         else:
             self._log_info(
