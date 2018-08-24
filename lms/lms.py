@@ -204,10 +204,7 @@ class LMS(object):
             src_op = open_set.get()
 
             # get next ops before the graph is changed
-            next_ops = set()
-            for t in src_op.outputs:
-                frontier_ops = set(util.get_consuming_ops(t))
-                next_ops |= frontier_ops
+            next_ops = set(self._fanouts(src_op))
 
             # do action for src_op
             # bypass excluded ops
@@ -233,24 +230,62 @@ class LMS(object):
 
     def _sync_swapout_ops(self):
         """Once a tensor is produced by an operation, swap it out first, 
-        then execute consuming operations of the tensor
-        """
-        for sw_op in self._swapout_ops:
-            src_op = ge.get_generating_ops(sw_op.inputs)[0]  # only one
-            target_ops = set()
-            for ts in src_op.outputs:
-                target_ops |= set(ge.get_consuming_ops(ts))
-            # do not block the other swap-out/swap-in ops
-            target_ops -= self._swapout_ops
-            target_ops -= self._swapin_ops
+        then execute consuming operations of the tensor.
 
-            # block computation ops until the swap-out op finishes
-            for op in target_ops:
-                ge.add_control_inputs(op, sw_op)
+        Source Op - Swap-out Op: 1-N relation.
+        Sequence: src_op -> (N swap-outs -> src_op) -> ...  -> (N swap-outs -> src_op)
+                  -> (N swap-outs - > k+1 level ops)
+        """
+        closed_src_set = set()
+        closed_sout_set = set()
+        def _fanouts_sout(op):
+            return set(self._fanouts(op)) & self._swapout_ops
+
+        for sw_op in self._swapout_ops:
+            if sw_op in closed_sout_set:
+                continue
+
+            src_op = self._fanins(sw_op)[0]
+
+            k = self._get_order(src_op)
+            k_ops = self._get_ops_by_order(k)
+            k_ops_sout = {op for op in k_ops if _fanouts_sout(op)}
+
+            # These ops have no swap-out ops. It is diffcult to control
+            # these ops, because some of them may participate in I/O or
+            # learnable parameters. We create a variable to keep them,
+            # but do not deal with them.
+            k_ops_no_sout = k_ops - k_ops_sout  
+
+            # interleave swapping and computation at the same level
+            # src_op -> (N swap-outs -> src_op) -> (N swap-outs -> src_op) -> ...
+            n_souts = _fanouts_sout(src_op) - closed_sout_set
+            for op in k_ops_sout-{src_op}:
+                for sout in n_souts:
+                    ge.add_control_inputs(op, sout)
+                closed_sout_set |= n_souts
+                n_souts = _fanouts_sout(op) - closed_sout_set
+
+            # ops at k+1 level
+            # (N swap-outs -> k+1 level)
+            next_k_ops = set()
+            for op in k_ops_sout:
+                # again, do not deal with ops having no swap-out ops
+                next_k_ops |= set(self._fanouts(op)) - self._swapout_ops
+            for op in next_k_ops:
+                for sout in n_souts:
+                    ge.add_control_inputs(op, sout)
+            closed_sout_set |= n_souts
 
     def _sync_swapin_ops(self):
         """While a tensor is swapping in for an operation,
-        block the other operations
+        block the other operations.
+        
+        Swap-in Op - Dest Op: N-N relation.
+
+        Sequence: k-1 level ops
+                 -> (swap-in op -> dest op) -> (swap-in op -> dest op) -> ...
+                 -> (swap-in op -> dest op) -> ops_no_sin
         """
         closed_dest_set = set()
         closed_sin_set = set()
@@ -276,6 +311,7 @@ class LMS(object):
             k_ops_no_sin = k_ops - k_ops_sin
 
             # swap-in ops are triggered once the ops in the previous level finish
+            # k-1 level ops -> swap-in op
             for sin_op in dest_sin_dict[dest_op]:
                 for op in pk_ops:
                     ge.add_control_inputs(sin_op, op)
@@ -283,6 +319,7 @@ class LMS(object):
             closed_dest_set.add(dest_op)
 
             # interleave swapping and computation
+            # (swap-in op -> dest op) -> (swap-in op -> dest op) -> ...
             curr_op = dest_op
             for op in k_ops_sin - {dest_op}:
                 sin_ops = dest_sin_dict[op]
@@ -299,6 +336,7 @@ class LMS(object):
                 closed_dest_set.add(op)
 
             # ops having no swapin are triggered last
+            # dest op -> ops_no_sin
             for op in k_ops_no_sin:
                 ge.add_control_inputs(op, curr_op)
 
@@ -673,6 +711,28 @@ class LMS(object):
                 "auto mode" if self._swapin_ahead < 0 else self._swapin_ahead))
         else:
             pass
+
+    def _fanins(self, op):
+        """Return all incomming operations.
+
+        Args:
+          op: a `tf.Operation`.
+
+        Return:
+          A list of `tf.Operation`.
+        """
+        return ge.get_generating_ops(op.inputs)
+
+    def _fanouts(self, op):
+        """Return all outgoing operations.
+
+        Args:
+          op: a `tf.Operation`.
+
+        Return:
+          A list of `tf.Operation`.
+        """
+        return ge.get_consuming_ops(op.outputs)
 
     def _connect_ops(self, src_op, dest_op, remap_inputs=False,
                      remap_outputs=False, idx=None, disconnect_first=False):
