@@ -50,7 +50,7 @@ class LMS(object):
                  swapout_threshold=-1,
                  swapin_groupby=5,
                  swapin_ahead=-1,
-                 sync_mode=False,
+                 sync_mode=0,
                  debug=False,
                  debug_level=1,
                  cpu_device="/cpu:0"):
@@ -77,7 +77,8 @@ class LMS(object):
             during the backward phase at least `swapin_ahead` nodes before it
             in the graph. Default `-1` (auto mode).
           sync_mode: whether overlap data transfer and kernel computation
-            or not. Default `False`.
+            or not. Four modes: `0` turn off. `1` only swap-out ops. `2` only
+            swap-inops. `3` both swap-out and swap-in. Default `0`.
           debug: debug mode for LMS. Default `False`.
           debug_level: debug level for LMS (1 or 2). Default `1`.
           cpu_device: the device we would like swap tensors to.
@@ -91,6 +92,8 @@ class LMS(object):
         self._swapout_threshold = swapout_threshold
         self._swapin_groupby = swapin_groupby
         self._swapin_ahead = swapin_ahead
+        if sync_mode not in {0, 1, 2, 3}:
+            raise ValueError('Invalid value for sync_mode')
         self._sync_mode = sync_mode
 
         # Operations with these types will be ignored
@@ -106,8 +109,8 @@ class LMS(object):
         self._debug_level = debug_level
 
         # keep the numbers of swap-out/swap-in ops
-        self._swapout_ops = 0
-        self._swapin_ops = 0
+        self._swapout_ops = set()
+        self._swapin_ops = set()
 
         # store a dictionary of visited ops to avoid multiple visits
         self._ops_dict = {}
@@ -163,14 +166,25 @@ class LMS(object):
 
         self._print_configuration()
         self._do_action(all_ops)  # add swapout/swapin ops
-        if not self._sync_mode:
+
+        if self._sync_mode == 0:  # async mode
             self._add_control_dependencies()  # add ctrl. dependencies
+        elif self._sync_mode == 1:   # sync for swap-out ops only
+            self._sync_swapout_ops()
+            self._add_control_dependencies()  # add ctrl. dependencies
+        elif self._sync_mode == 2:  # sync for swap-in ops only
+            self._sync_swapin_ops()
+        elif self._sync_mode == 3:  # sync for both swap-out and swap-in ops
+            self._sync_swapout_ops()
+            self._sync_swapin_ops()
+        else:
+            pass
 
         self._log_info(
             "Added {} operations to the model".format(
-                self._swapout_ops + self._swapin_ops) + \
+                len(self._swapout_ops) + len(self._swapin_ops)) +
             " ({} swap-out operations and {} swap-in operations)".format(
-                self._swapout_ops, self._swapin_ops))
+                len(self._swapout_ops), len(self._swapin_ops)))
         self._log_info("Editing model for LMS, took: {} ms".format(
             (time.time()-start_time)*1000))
 
@@ -190,10 +204,7 @@ class LMS(object):
             src_op = open_set.get()
 
             # get next ops before the graph is changed
-            next_ops = set()
-            for t in src_op.outputs:
-                frontier_ops = set(util.get_consuming_ops(t))
-                next_ops |= frontier_ops
+            next_ops = set(self._fanouts(src_op))
 
             # do action for src_op
             # bypass excluded ops
@@ -216,6 +227,118 @@ class LMS(object):
                     open_set.put(op)
 
             closed_set.add(src_op)
+
+    def _sync_swapout_ops(self):
+        """Once a tensor is produced by an operation, swap it out first, 
+        then execute consuming operations of the tensor.
+
+        Source Op - Swap-out Op: 1-N relation.
+        Sequence: src_op -> (N swap-outs -> src_op) -> ...  -> (N swap-outs -> src_op)
+                  -> (N swap-outs - > k+1 level ops)
+        """
+        closed_src_set = set()
+        closed_sout_set = set()
+        def _fanouts_sout(op):
+            return set(self._fanouts(op)) & self._swapout_ops
+
+        for sw_op in self._swapout_ops:
+            if sw_op in closed_sout_set:
+                continue
+
+            src_op = self._fanins(sw_op)[0]
+
+            k = self._get_order(src_op)
+            k_ops = self._get_ops_by_order(k)
+            k_ops_sout = {op for op in k_ops if _fanouts_sout(op)}
+
+            # These ops have no swap-out ops. It is diffcult to control
+            # these ops, because some of them may participate in I/O or
+            # learnable parameters. We create a variable to keep them,
+            # but do not deal with them.
+            k_ops_no_sout = k_ops - k_ops_sout  
+
+            # interleave swapping and computation at the same level
+            # src_op -> (N swap-outs -> src_op) -> (N swap-outs -> src_op) -> ...
+            n_souts = _fanouts_sout(src_op) - closed_sout_set
+            for op in k_ops_sout-{src_op}:
+                for sout in n_souts:
+                    ge.add_control_inputs(op, sout)
+                closed_sout_set |= n_souts
+                n_souts = _fanouts_sout(op) - closed_sout_set
+
+            # ops at k+1 level
+            # (N swap-outs -> k+1 level)
+            next_k_ops = set()
+            for op in k_ops_sout:
+                # again, do not deal with ops having no swap-out ops
+                next_k_ops |= set(self._fanouts(op)) - self._swapout_ops
+            for op in next_k_ops:
+                for sout in n_souts:
+                    ge.add_control_inputs(op, sout)
+            closed_sout_set |= n_souts
+
+    def _sync_swapin_ops(self):
+        """While a tensor is swapping in for an operation,
+        block the other operations.
+        
+        Swap-in Op - Dest Op: N-N relation.
+
+        Sequence: k-1 level ops
+                 -> (swap-in op -> dest op) -> (swap-in op -> dest op) -> ...
+                 -> (swap-in op -> dest op) -> ops_no_sin
+        """
+        closed_dest_set = set()
+        closed_sin_set = set()
+        dest_sin_dict = {}
+        for (_, dest_op, sin_op) in self._ops_triples:
+            # dest_sin_dict
+            if dest_op in dest_sin_dict:
+                ops = dest_sin_dict[dest_op]
+                ops.add(sin_op)
+                dest_sin_dict[dest_op] = ops
+            else:
+                dest_sin_dict[dest_op] = {sin_op}
+
+        for (_, dest_op, _) in self._ops_triples:
+            if dest_op in closed_dest_set:
+                continue
+
+            k = self._get_order(dest_op)
+            k_ops = self._get_ops_by_order(k)
+            pk_ops = self._get_ops_by_order(k-1)  # previous level
+
+            k_ops_sin = {op for op in k_ops if op in dest_sin_dict}
+            k_ops_no_sin = k_ops - k_ops_sin
+
+            # swap-in ops are triggered once the ops in the previous level finish
+            # k-1 level ops -> swap-in op
+            for sin_op in dest_sin_dict[dest_op]:
+                for op in pk_ops:
+                    ge.add_control_inputs(sin_op, op)
+                closed_sin_set.add(sin_op)
+            closed_dest_set.add(dest_op)
+
+            # interleave swapping and computation
+            # (swap-in op -> dest op) -> (swap-in op -> dest op) -> ...
+            curr_op = dest_op
+            for op in k_ops_sin - {dest_op}:
+                sin_ops = dest_sin_dict[op]
+                if sin_ops <= closed_sin_set:
+                    # all tensors for this op have already swapped in,
+                    # trigger this op
+                    ge.add_control_inputs(op, curr_op)
+                else:
+                    # swap in the remaining tensors for this op
+                    for sin_op in sin_ops - closed_sin_set:
+                        ge.add_control_inputs(sin_op, curr_op)
+                        closed_sin_set.add(sin_op)
+                curr_op = op
+                closed_dest_set.add(op)
+
+            # ops having no swapin are triggered last
+            # dest op -> ops_no_sin
+            for op in k_ops_no_sin:
+                ge.add_control_inputs(op, curr_op)
 
     def _groupby(self, ops, limit=5):
         """Group `ops` into groups so that topological distance between
@@ -286,11 +409,8 @@ class LMS(object):
             # create a swap_out node
             swapout_op = self._add_swapout(src_op, t)
             ge.add_control_inputs(swapout_op, src_op)
-            self._swapout_ops = self._swapout_ops + 1
+            self._swapout_ops.add(swapout_op)
             self._excl_ops.add(swapout_op)  # exclusive this op
-            if self._sync_mode:
-                for op in consuming_ops:
-                    ge.add_control_inputs(op, swapout_op)
 
             # create swap_in nodes
             # group near candidates
@@ -299,21 +419,13 @@ class LMS(object):
             for dest_ops in cands_grp:
                 # swap_in op
                 swapin_op = self._add_swapin(swapout_op, dest_ops, t)
-                self._swapin_ops = self._swapin_ops + 1
+                self._swapin_ops.add(swapin_op)
                 self._excl_ops.add(swapin_op)  # exclusive this op
                 # control dependency -> swap_in
                 ops_ords = [(op, self._get_order(op)) for op in dest_ops]
                 x = sorted([i[1] for i in ops_ords])[0]  # the earliest op
                 dest_op = [op[0] for op in ops_ords if op[1] == x][0]
-                if self._sync_mode:
-                    ctrl_ops = set()
-                    for in_t in dest_op.inputs:
-                        ctrl_ops |= set(util.get_generating_ops(in_t))
-                    ctrl_ops.discard(swapin_op)
-                    for op in ctrl_ops:
-                        ge.add_control_inputs(swapin_op, op)
-                else:
-                    self._ops_triples.append((src_op, dest_op, swapin_op))
+                self._ops_triples.append((src_op, dest_op, swapin_op))
 
     def _add_swapout(self, src_op, ts0):
         """Add a swapout operation to the graph to swap out the output tensor `ts0`
@@ -339,14 +451,16 @@ class LMS(object):
           A `tf.Operation` newly added to the graph.
         """
         with ops.device(self._cpu_device):
-            swap_out = array_ops.identity(ts0, name="lms/swapout")
+            swap_out = array_ops.identity(
+                ts0,
+                name="lms/swapout_{}".format(
+                    ts0.name.replace("/", "_").replace(":", "_")))
 
         # Connect: src-node -> swap-out
         src_svg = ge.sgv(src_op, graph=self._graph)
         src_out_idx = src_svg.output_index(ts0)
         self._connect_ops(src_op, swap_out.op, remap_outputs=True,
                           idx=src_out_idx)
-        self._excl_ops.add(swap_out.op)
         self._log_info("Tensor {} (shape: {}) will be placed on {}".format(
             ts0.name, ts0.shape, self._cpu_device), 1)
 
@@ -379,7 +493,10 @@ class LMS(object):
           A `tf.Operation` newly added to the graph.
         """
         with ops.device(self._cpu_device):
-            swap_in = array_ops.identity(ts0, name="lms/swapin")
+            swap_in = array_ops.identity(
+                ts0,
+                name="lms/swapin_{}".format(
+                    ts0.name.replace("/", "_").replace(":", "_")))
 
         # Connect: swap_out -> swap_in
         self._connect_ops(swapout_op, swap_in.op)
@@ -392,7 +509,6 @@ class LMS(object):
                               remap_inputs=True, idx=input_idx)
             self._log_info("Operation {} (order: {}) consumes {}".format(
                 dest_op.name, self._get_order(dest_op), ts0.name), 1)
-        self._excl_ops.add(swap_in.op)
 
         return swap_in.op
 
@@ -579,12 +695,44 @@ class LMS(object):
         """
         self._log_info("swapout_threshold: {}".format(self._swapout_threshold))
         self._log_info("swapin_groupby: {}".format(self._swapin_groupby))
-        if self._sync_mode:
+        if self._sync_mode == 1:
             self._log_info(
-                "sync_mode was turned on. swapin_ahead will be ignored")
-        else:
+                "sync_mode was turned on for swap-out ops")
             self._log_info("swapin_ahead: {}".format(
                 "auto mode" if self._swapin_ahead < 0 else self._swapin_ahead))
+        elif self._sync_mode == 2:
+            self._log_info(
+                "sync_mode was turned on for swap-in ops. swapin_ahead will be ignored")
+        elif self._sync_mode == 3:
+            self._log_info(
+                "sync_mode was turned on for both swap-out and swap-in ops. swapin_ahead will be ignored")
+        elif self._sync_mode == 0:
+            self._log_info("swapin_ahead: {}".format(
+                "auto mode" if self._swapin_ahead < 0 else self._swapin_ahead))
+        else:
+            pass
+
+    def _fanins(self, op):
+        """Return all incomming operations.
+
+        Args:
+          op: a `tf.Operation`.
+
+        Return:
+          A list of `tf.Operation`.
+        """
+        return ge.get_generating_ops(op.inputs)
+
+    def _fanouts(self, op):
+        """Return all outgoing operations.
+
+        Args:
+          op: a `tf.Operation`.
+
+        Return:
+          A list of `tf.Operation`.
+        """
+        return ge.get_consuming_ops(op.outputs)
 
     def _connect_ops(self, src_op, dest_op, remap_inputs=False,
                      remap_outputs=False, idx=None, disconnect_first=False):
