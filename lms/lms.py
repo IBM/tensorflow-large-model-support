@@ -260,7 +260,7 @@ class LMS(object):
             n_souts = _fanouts_sout(src_op) - closed_sout_set
             # for op in k_ops_sout-{src_op}:
             #     for sout in n_souts:
-            #         ge.add_control_inputs(op, sout)
+            #         self._add_control_inputs(op, sout)
             #     closed_sout_set |= n_souts
             #     n_souts = _fanouts_sout(op) - closed_sout_set
 
@@ -273,7 +273,7 @@ class LMS(object):
             next_k_ops -= self._swapout_ops
             for op in next_k_ops:
                 for sout in n_souts:
-                    ge.add_control_inputs(op, sout)
+                    self._add_control_inputs(op, sout)
             closed_sout_set |= n_souts
 
     def _sync_swapin_ops(self):
@@ -313,7 +313,7 @@ class LMS(object):
             # k-1 level ops -> swap-in op
             for sin_op in dest_sin_dict[dest_op]:
                 for op in pk_ops:
-                    ge.add_control_inputs(sin_op, op)
+                    self._add_control_inputs(sin_op, op)
                 closed_sin_set.add(sin_op)
             closed_dest_set.add(dest_op)
 
@@ -325,11 +325,11 @@ class LMS(object):
                 if sin_ops <= closed_sin_set:
                     # all tensors for this op have already swapped in,
                     # trigger this op
-                    ge.add_control_inputs(op, curr_op)
+                    self._add_control_inputs(op, curr_op)
                 else:
                     # swap in the remaining tensors for this op
                     for sin_op in sin_ops - closed_sin_set:
-                        ge.add_control_inputs(sin_op, curr_op)
+                        self._add_control_inputs(sin_op, curr_op)
                         closed_sin_set.add(sin_op)
                 curr_op = op
                 closed_dest_set.add(op)
@@ -337,7 +337,7 @@ class LMS(object):
             # ops having no swapin are triggered last
             # dest op -> ops_no_sin
             for op in k_ops_no_sin:
-                ge.add_control_inputs(op, curr_op)
+                self._add_control_inputs(op, curr_op)
 
     def _groupby(self, ops, limit=5):
         """Group `ops` into groups so that topological distance between
@@ -447,7 +447,7 @@ class LMS(object):
         """
         # create a swap_out node
         swapout_op = self._add_swapout(src_op, ts)
-        ge.add_control_inputs(swapout_op, src_op)
+        self._add_control_inputs(swapout_op, src_op)
 
         # create swap_in nodes
         dest_sin = set()
@@ -602,7 +602,7 @@ class LMS(object):
         ctrld_op = re[0]
         ctrld_order = re[1]
         if ctrld_op:
-            ge.add_control_inputs(swapin_op, ctrld_op)
+            self._add_control_inputs(swapin_op, ctrld_op)
             self._log_info(
                 "Control dependency: {} (order: {}) -> {} (order: {})".format(
                     ctrld_op.name, ctrld_order, dest_op.name, self._get_order(dest_op)), 1)
@@ -768,6 +768,22 @@ class LMS(object):
           A list of `tf.Operation`.
         """
         return ge.get_consuming_ops(op.outputs)
+
+    def _add_control_inputs(self, op1, op2):
+        """Add control dependency from `op2` to `op1`.
+
+        Args:
+          op1: a `tf.Operation`.
+          op2: a `tf.Operation`.
+
+        Return:
+          True/False.
+        """
+        if op2 not in op1.control_inputs:
+            ge.add_control_inputs(op1, op2)
+            return True
+        else:
+            return False
 
     def _connect_ops(self, src_op, dest_op, remap_inputs=False,
                      remap_outputs=False, idx=None, disconnect_first=False):
