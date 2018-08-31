@@ -236,10 +236,10 @@ class LMS(object):
         Sequence: src_op -> (N swap-outs -> src_op) -> ...  -> (N swap-outs -> src_op)
                   -> (N swap-outs - > k+1 level ops)
         """
-        closed_src_set = set()
-        closed_sout_set = set()
         def _fanouts_sout(op):
             return set(self._fanouts(op)) & self._swapout_ops
+
+        closed_sout_set = set()
 
         for sw_op in self._swapout_ops:
             if sw_op in closed_sout_set:
@@ -258,20 +258,21 @@ class LMS(object):
             k_ops_no_sout = k_ops - k_ops_sout  
 
             # interleave swapping and computation at the same level
-            # src_op -> (N swap-outs -> src_op) -> (N swap-outs -> src_op) -> ...
+            # src_op -> (N swap-outs -> src_op) -> (N swap-outs -> src_op)->...
             n_souts = _fanouts_sout(src_op) - closed_sout_set
-            for op in k_ops_sout-{src_op}:
-                for sout in n_souts:
-                    ge.add_control_inputs(op, sout)
-                closed_sout_set |= n_souts
-                n_souts = _fanouts_sout(op) - closed_sout_set
+            # for op in k_ops_sout-{src_op}:
+            #     for sout in n_souts:
+            #         ge.add_control_inputs(op, sout)
+            #     closed_sout_set |= n_souts
+            #     n_souts = _fanouts_sout(op) - closed_sout_set
 
             # ops at k+1 level
             # (N swap-outs -> k+1 level)
             next_k_ops = set()
             for op in k_ops_sout:
                 # again, do not deal with ops having no swap-out ops
-                next_k_ops |= set(self._fanouts(op)) - self._swapout_ops
+                next_k_ops |= set(self._fanouts(op))
+            next_k_ops -= self._swapout_ops
             for op in next_k_ops:
                 for sout in n_souts:
                     ge.add_control_inputs(op, sout)
