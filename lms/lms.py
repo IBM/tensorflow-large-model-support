@@ -96,9 +96,6 @@ class LMS(object):
             raise ValueError('Invalid value for sync_mode')
         self._sync_mode = sync_mode
 
-        # Operations with these types will be ignored
-        self._excl_types |= {'Const', 'Identity'}
-
         self._excl_ops = set()
         self._incl_ops = set()
         self._topo_sort = None
@@ -155,7 +152,8 @@ class LMS(object):
             self._topo_sort.size))
         for i in range(0, self._topo_sort.size):
             self._log_info("[{}]: {}".format(
-                i, [op.name for op in self._get_ops_by_order(i)]), 1)
+                i, [(op.name, op.type)
+                    for op in self._get_ops_by_order(i)]), 1)
 
         # roughly estimate swapin_threshold in auto mode
         if self._swapout_threshold < 0:

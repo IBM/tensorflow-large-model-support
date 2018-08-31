@@ -35,11 +35,22 @@ class TOPOS(object):
         self._topo_sort = {}
         self._orders = {}
 
-        self._excl_types = {'Placeholder'}  # input data
-        self._excl_types |= {'VariableV2'}  # learnable parametersa
-        self._excl_types |= {'Read', 'Assign', 'AssignVariableOp',
-                             'VarHandleOp', 'ReadVariableOp',
-                             'VarIsInitializedOp', 'RandomUniform'}
+        # input data
+        self._excl_types = {'Const', 'Placeholder', 'PlaceholderWithDefault'}
+        self._excl_types |= {'VariableV2'}  # learnable parameters
+        # variable ops
+        # https://github.com/tensorflow/tensorflow/blob/master/tensorflow/compiler/tf2xla/kernels/variable_ops.cc
+        self._excl_types |= {'Read', 'Assign', 'VarHandleOp',
+                             'VarIsInitializedOp', 'VariableShape',
+                             'ReadVariableOp', 'AssignVariableOp',
+                             'AssignAddVariableOp', 'AssignSubVariableOp',
+                             'ResourceGather', 'ResourceScatterAdd',
+                             'ResourceScatterSub', 'ResourceScatterMul',
+                             'ResourceScatterDiv', 'ResourceScatterMin',
+                             'ResourceScatterMax', 'ResourceScatterUpdate',
+                             'ResourceScatterNdUpdate', 'ResourceScatterNdAdd'}
+        self._excl_types |= {'Fill', 'Range', 'RandomUniform'}
+        self._excl_types |= {'Identity'}  # read data
     
     def build(self):
         """Build a topological order
