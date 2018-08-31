@@ -35,12 +35,27 @@ class TOPOS(object):
         self._topo_sort = {}
         self._orders = {}
 
+        self._excl_types = {'Placeholder'}  # input data
+        self._excl_types |= {'VariableV2'}  # learnable parametersa
+        self._excl_types |= {'Read', 'Assign', 'AssignVariableOp',
+                             'VarHandleOp', 'ReadVariableOp',
+                             'VarIsInitializedOp', 'RandomUniform'}
+    
     def build(self):
         """Build a topological order
         """
         topo_sort = list(toposort.toposort(self._build_dependency_dict()))
+
+        k = 0
         for i in range(0, len(topo_sort)):
-            self._topo_sort[i] = topo_sort[i]
+            # remove ops related to variable initialization
+            xs = {op for op in topo_sort[i]
+                  if op.type not in self._excl_types}
+            if xs:
+                self._topo_sort[k] = xs
+                k += 1 
+            else:
+                continue
 
         # build a dict of (op, order)
         self._build_order_dict()
@@ -96,7 +111,7 @@ class TOPOS(object):
         if op in self._orders:
             return self._orders[op]
         else:
-            return -1
+            return None
 
     def get_ops(self, order):
         """Return a set of ops with the same order.
@@ -107,7 +122,10 @@ class TOPOS(object):
         Return:
           A set of `tf.Operation`
         """
-        return self._topo_sort[order]
+        if order in self._topo_sort:
+            return self._topo_sort[order]
+        else:
+            return None
 
     @property
     def size(self):

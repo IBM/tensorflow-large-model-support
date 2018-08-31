@@ -98,8 +98,6 @@ class LMS(object):
 
         # Operations with these types will be ignored
         self._excl_types |= {'Const', 'Identity'}
-        self._excl_types |= {'Placeholder'}  # input data
-        self._excl_types |= {'VariableV2'}  # learnable parameters
 
         self._excl_ops = set()
         self._incl_ops = set()
@@ -209,6 +207,8 @@ class LMS(object):
             # do action for src_op
             # bypass excluded ops
             if src_op in self._excl_ops:
+                pass
+            elif self._get_order(src_op) is None:
                 pass
             elif self._incl_ops:
                 # if inclusive mode is enabled,
@@ -385,10 +385,10 @@ class LMS(object):
         """
         self._log_info("Operation: {}".format(src_op), 2)
 
-        src_op_order = self._get_order(src_op)
-        ts_dests = {}
-
         # filter candidates
+
+        ts_dests = {}
+        src_op_order = self._get_order(src_op)
         for ts in src_op.outputs:
             # filter by tensor shape
             # do not swap 1-dimension or unknown shape tensors.
@@ -399,16 +399,16 @@ class LMS(object):
             # filter by topological distance
             # candidates are ops whose distance to `src_op` is
             # greater than threshold
-            consuming_ops = util.get_consuming_ops(ts)
-            cands = [
-                op
-                for op in consuming_ops
-                if self._get_order(op) - src_op_order > self._swapout_threshold
-            ]
+            cands = []
+            for op in util.get_consuming_ops(ts):
+                k = self._get_order(op)
+                if k is not None:
+                    if k - src_op_order > self._swapout_threshold:
+                        cands += [op]
             if len(cands) == 0:
                 continue
             else:
-                ts_dests[ts]=cands
+                ts_dests[ts] = cands
 
         if ts_dests:
             self._log_info("Operation: {}, order: {}, type: {}".format(
