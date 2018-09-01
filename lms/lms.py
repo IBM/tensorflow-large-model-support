@@ -798,11 +798,17 @@ class LMS(object):
         Return:
           True/False.
         """
-        if op2 not in op1.control_inputs:
-            ge.add_control_inputs(op1, op2)
-            return True
-        else:
+        if op2 in op1.control_inputs:
             return False
+
+        if op1 in op2.control_inputs:
+            return False
+
+        if op2 in self._fanouts(op1):
+            return False
+
+        ge.add_control_inputs(op1, op2)
+        return True
 
     def _connect_ops(self, src_op, dest_op, remap_inputs=False,
                      remap_outputs=False, idx=None, disconnect_first=False):
