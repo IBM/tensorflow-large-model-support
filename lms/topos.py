@@ -35,38 +35,13 @@ class TOPOS(object):
         self._topo_sort = {}
         self._orders = {}
 
-        # input data
-        self._excl_types = {'Const', 'Placeholder', 'PlaceholderWithDefault'}
-        self._excl_types |= {'VariableV2'}  # learnable parameters
-        # variable ops
-        # https://github.com/tensorflow/tensorflow/blob/master/tensorflow/compiler/tf2xla/kernels/variable_ops.cc
-        self._excl_types |= {'Read', 'Assign', 'VarHandleOp',
-                             'VarIsInitializedOp', 'VariableShape',
-                             'ReadVariableOp', 'AssignVariableOp',
-                             'AssignAddVariableOp', 'AssignSubVariableOp',
-                             'ResourceGather', 'ResourceScatterAdd',
-                             'ResourceScatterSub', 'ResourceScatterMul',
-                             'ResourceScatterDiv', 'ResourceScatterMin',
-                             'ResourceScatterMax', 'ResourceScatterUpdate',
-                             'ResourceScatterNdUpdate', 'ResourceScatterNdAdd'}
-        self._excl_types |= {'Fill', 'Range', 'RandomUniform'}
-        self._excl_types |= {'Identity'}  # read data
-    
     def build(self):
         """Build a topological order
         """
         topo_sort = list(toposort.toposort(self._build_dependency_dict()))
 
-        k = 0
         for i in range(0, len(topo_sort)):
-            # remove ops related to variable initialization
-            xs = {op for op in topo_sort[i]
-                  if op.type not in self._excl_types}
-            if xs:
-                self._topo_sort[k] = xs
-                k += 1 
-            else:
-                continue
+            self._topo_sort[i] = topo_sort[i]
 
         # build a dict of (op, order)
         self._build_order_dict()

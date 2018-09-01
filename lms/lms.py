@@ -96,6 +96,26 @@ class LMS(object):
             raise ValueError('Invalid value for sync_mode')
         self._sync_mode = sync_mode
 
+        # variable ops: https://github.com/tensorflow/tensorflow/blob/master/tensorflow/compiler/tf2xla/kernels/variable_ops.cc
+        self._unused_types = {
+            # input data
+            'Const', 'Identity',
+            'Placeholder', 'PlaceholderWithDefault',
+            # learnable parameters
+            'VariableV2', 'Read', 'Assign', 'VarHandleOp',
+            # variable ops
+            'VarIsInitializedOp', 'VariableShape',
+            'ReadVariableOp', 'AssignVariableOp',
+            'AssignAddVariableOp', 'AssignSubVariableOp'
+            'ResourceGather', 'ResourceScatterAdd',
+            'ResourceScatterSub', 'ResourceScatterMul',
+            'ResourceScatterDiv', 'ResourceScatterMin',
+            'ResourceScatterMax', 'ResourceScatterUpdate',
+            'ResourceScatterNdUpdate', 'ResourceScatterNdAdd',
+            # data filling
+            'Fill', 'Range', 'RandomUniform'}
+        self._excl_types |= self._unused_types
+
         self._excl_ops = set()
         self._incl_ops = set()
         self._topo_sort = None
@@ -397,12 +417,11 @@ class LMS(object):
             # filter by topological distance
             # candidates are ops whose distance to `src_op` is
             # greater than threshold
-            cands = []
-            for op in util.get_consuming_ops(ts):
-                k = self._get_order(op)
-                if k is not None:
-                    if k - src_op_order > self._swapout_threshold:
-                        cands += [op]
+            cands = [
+                op
+                for op in util.get_consuming_ops(ts)
+                if self._get_order(op) - src_op_order > self._swapout_threshold
+            ]
             if len(cands) == 0:
                 continue
             else:
