@@ -185,16 +185,8 @@ class LMS(object):
 
         if self._sync_mode == 0:  # async mode
             self._add_control_dependencies()  # add ctrl. dependencies
-        elif self._sync_mode == 1:   # sync for swap-out ops only
-            self._sync_swapout_ops()
-            self._add_control_dependencies()  # add ctrl. dependencies
-        elif self._sync_mode == 2:  # sync for swap-in ops only
-            self._sync_swapin_ops()
-        elif self._sync_mode == 3:  # sync for both swap-out and swap-in ops
-            self._sync_swapout_ops()
-            self._sync_swapin_ops()
         else:
-            pass
+            self._sync_ops(self._sync_mode)
 
         self._log_info(
             "Added {} operations to the model".format(
@@ -246,118 +238,32 @@ class LMS(object):
 
             closed_set.add(src_op)
 
-    def _sync_swapout_ops(self):
-        """Once a tensor is produced by an operation, swap it out first, 
-        then execute consuming operations of the tensor.
-
-        Source Op - Swap-out Op: 1-N relation.
-        Sequence: src_op -> (N swap-outs -> src_op) -> ...  -> (N swap-outs -> src_op)
-                  -> (N swap-outs - > k+1 level ops)
+    def _sync_ops(self, sync_mode):
+        """TODO: write comment
         """
-        def _fanouts_sout(op):
+        def _souts(op):
             return set(self._fanouts(op)) & self._swapout_ops
 
-        closed_sout_set = set()
+        def _sins(op):
+            return set(self._fanins(op)) & self._swapin_ops
 
-        for sw_op in self._swapout_ops:
-            if sw_op in closed_sout_set:
-                continue
+        def _add_controls(ops1, ops2):
+            for op1 in ops1:
+                ge.add_control_inputs(op1, ops2)
 
-            src_op = self._fanins(sw_op)[0]
+        if sync_mode in {1, 3}:
+            dest_ops = {op[1] for op in self._ops_triples}
+            for x in dest_ops:
+                x_sins = _sins(x)
+                fs = set(self._fanins(x)) - x_sins
+                _add_controls(x_sins, fs)
 
-            k = self._get_order(src_op)
-            k_ops = self._get_ops_by_order(k)
-            k_ops_sout = {op for op in k_ops if _fanouts_sout(op)}
-
-            # These ops have no swap-out ops. It is diffcult to control
-            # these ops, because some of them may participate in I/O or
-            # learnable parameters. We create a variable to keep them,
-            # but do not deal with them.
-            k_ops_no_sout = k_ops - k_ops_sout  
-
-            # interleave swapping and computation at the same level
-            # src_op -> (N swap-outs -> src_op) -> (N swap-outs -> src_op)->...
-            n_souts = _fanouts_sout(src_op) - closed_sout_set
-            # for op in k_ops_sout-{src_op}:
-            #     for sout in n_souts:
-            #         self._add_control_inputs(op, sout)
-            #     closed_sout_set |= n_souts
-            #     n_souts = _fanouts_sout(op) - closed_sout_set
-
-            # ops at k+1 level
-            # (N swap-outs -> k+1 level)
-            next_k_ops = set()
-            for op in k_ops_sout:
-                # again, do not deal with ops having no swap-out ops
-                next_k_ops |= set(self._fanouts(op))
-            next_k_ops -= self._swapout_ops
-            for op in next_k_ops:
-                for sout in n_souts:
-                    self._add_control_inputs(op, sout)
-            closed_sout_set |= n_souts
-
-    def _sync_swapin_ops(self):
-        """While a tensor is swapping in for an operation,
-        block the other operations.
-        
-        Swap-in Op - Dest Op: N-N relation.
-
-        Sequence: k-1 level ops
-                 -> (swap-in op -> dest op) -> (swap-in op -> dest op) -> ...
-                 -> (swap-in op -> dest op) -> ops_no_sin
-        """
-        closed_dest_set = set()
-        closed_sin_set = set()
-        dest_sin_dict = {}
-        for (_, dest_op, sin_op) in self._ops_triples:
-            # dest_sin_dict
-            if dest_op in dest_sin_dict:
-                ops = dest_sin_dict[dest_op]
-                ops.add(sin_op)
-                dest_sin_dict[dest_op] = ops
-            else:
-                dest_sin_dict[dest_op] = {sin_op}
-
-        for (_, dest_op, _) in self._ops_triples:
-            if dest_op in closed_dest_set:
-                continue
-
-            k = self._get_order(dest_op)
-            k_ops = self._get_ops_by_order(k)
-            pk_ops = self._get_ops_by_order(k-1)  # previous level
-
-            k_ops_sin = {op for op in k_ops if op in dest_sin_dict}
-            k_ops_no_sin = k_ops - k_ops_sin
-
-            # swap-in ops are triggered once the ops in the previous level finish
-            # k-1 level ops -> swap-in op
-            for sin_op in dest_sin_dict[dest_op]:
-                for op in pk_ops:
-                    self._add_control_inputs(sin_op, op)
-                closed_sin_set.add(sin_op)
-            closed_dest_set.add(dest_op)
-
-            # interleave swapping and computation
-            # (swap-in op -> dest op) -> (swap-in op -> dest op) -> ...
-            curr_op = dest_op
-            for op in k_ops_sin - {dest_op}:
-                sin_ops = dest_sin_dict[op]
-                if sin_ops <= closed_sin_set:
-                    # all tensors for this op have already swapped in,
-                    # trigger this op
-                    self._add_control_inputs(op, curr_op)
-                else:
-                    # swap in the remaining tensors for this op
-                    for sin_op in sin_ops - closed_sin_set:
-                        self._add_control_inputs(sin_op, curr_op)
-                        closed_sin_set.add(sin_op)
-                curr_op = op
-                closed_dest_set.add(op)
-
-            # ops having no swapin are triggered last
-            # dest op -> ops_no_sin
-            for op in k_ops_no_sin:
-                self._add_control_inputs(op, curr_op)
+        if sync_mode in {2, 3}:
+            src_ops = {op[0] for op in self._ops_triples}
+            for x in src_ops:
+                x_souts = _souts(x)
+                fs = set(self._fanouts(x)) - x_souts
+                _add_controls(fs, x_souts)
 
     def _groupby(self, ops, limit=5):
         """Group `ops` into groups so that topological distance between
