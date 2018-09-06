@@ -18,6 +18,7 @@
 from six.moves import queue as Queue
 import toposort
 
+import tensorflow.contrib.graph_editor as ge
 from tensorflow.contrib.graph_editor import util
 
 
@@ -84,6 +85,56 @@ class TOPOS(object):
         for order, dep_ops in self._topo_sort.items():
             for op in dep_ops:
                 self._orders[op] = order
+
+    def reset(self):
+        """Reset the topological sort
+        """
+        self._topo_sort = {}
+        self._orders = {}
+
+    def serialize_from(self, from_order):
+        """Serialize ops at the same level in the topological sort
+        """
+        d = self.size
+        s = min(from_order, d)
+
+        # serialize ops at the same level
+        prev_k_ops = set()
+        for i in range(s, d):
+            xs = self.get_ops(i)
+            if xs is None:
+                continue
+                
+            # do not serialize levels including ops in the "/cond/" scope.
+            cond_ops = {op for op in xs if "/cond/" in op.name}
+            if len(cond_ops) > 0:
+                prev_k_ops = set()
+                continue
+            else:
+                pass
+
+            head_ops = {next(iter(xs))}
+            tail_ops = xs - head_ops
+
+            k_ops = head_ops
+            if len(prev_k_ops) > 0:
+                for op in k_ops:
+                    ge.add_control_inputs(
+                        op,
+                        prev_k_ops - set(op.control_inputs))
+
+            for op in tail_ops:
+                ge.add_control_inputs(
+                    op,
+                    k_ops - set(op.control_inputs))
+                k_ops = {op}
+
+            prev_k_ops = k_ops
+
+        # rebuild the topo sort
+        self.reset()
+        self.build()
+        return s
 
     def get_order(self, op):
         """Return the order of an operation.

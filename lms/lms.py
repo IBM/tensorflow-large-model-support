@@ -48,7 +48,7 @@ class LMS(object):
                  excl_types=set(),
                  incl_types=set(),
                  swapout_threshold=-1,
-                 swapin_groupby=5,
+                 swapin_groupby=0,
                  swapin_ahead=-1,
                  sync_mode=0,
                  debug=False,
@@ -73,6 +73,7 @@ class LMS(object):
             tensor. Default `-1` (auto mode).
           swapin_groupby: consuming operations whose distances among them are
             within `swapin_groupby` share the same swap-in operation.
+            Default `0`.
           swapin_ahead: lower-bound value for LMS. A tensor will be swapped in
             during the backward phase at least `swapin_ahead` nodes before it
             in the graph. Default `-1` (auto mode).
@@ -92,19 +93,31 @@ class LMS(object):
         self._swapout_threshold = swapout_threshold
         self._swapin_groupby = swapin_groupby
         self._swapin_ahead = swapin_ahead
-        if sync_mode not in {0, 1, 2, 3}:
+        if sync_mode < 0:
             raise ValueError('Invalid value for sync_mode')
         self._sync_mode = sync_mode
+
+        # https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/framework/graph_util_impl.py
+        self._variable_ops = {
+            "Assign",
+            "AssignAdd",
+            "AssignSub",
+            "Queue",
+            "ScatterAdd",
+            "ScatterSub",
+            "ScatterUpdate",
+            "TruncatedNormal",
+            "Variable",
+            "VariableV2",
+        }
 
         # variable ops: https://github.com/tensorflow/tensorflow/blob/master/tensorflow/compiler/tf2xla/kernels/variable_ops.cc
         self._unused_types = {
             # input data
-            'Const', 'Identity',
+            'Const', 'Identity', 'Read',
             'Placeholder', 'PlaceholderWithDefault',
-            # learnable parameters
-            'VariableV2', 'Read', 'Assign', 'VarHandleOp',
             # variable ops
-            'VarIsInitializedOp', 'VariableShape',
+            'VarHandleOp', 'VarIsInitializedOp', 'VariableShape',
             'ReadVariableOp', 'AssignVariableOp',
             'AssignAddVariableOp', 'AssignSubVariableOp'
             'ResourceGather', 'ResourceScatterAdd',
@@ -114,7 +127,7 @@ class LMS(object):
             'ResourceScatterNdUpdate', 'ResourceScatterNdAdd',
             # data filling
             'Fill', 'Range', 'RandomUniform'}
-        self._excl_types |= self._unused_types
+        self._excl_types |= self._unused_types | self._variable_ops
 
         self._excl_ops = set()
         self._incl_ops = set()
@@ -168,6 +181,21 @@ class LMS(object):
         # build a topological sort
         self._topo_sort = topos.TOPOS(all_ops)
         self._topo_sort.build()
+        if self._sync_mode > 3:
+            init_ops = self._force_variable_initialization(
+                {op for op in all_ops if op.type in {'Variable', 'VariableV2'}})
+            if len(init_ops) > 0:
+                # when are all variables initialized?
+                self._topo_sort.reset()
+                self._topo_sort.build()
+                m = max({self._get_order(op) for op in init_ops})
+                self._sync_mode = max(m+1, self._sync_mode)
+            # oops! looks like `sync_mode` has a secret role!!!
+            self._log_info("Serialize the topological sort from " +
+                           "level {} to level {} (last level)".format(
+                               self._sync_mode, self._topo_sort.size))
+            self._topo_sort.serialize_from(self._sync_mode)
+
         self._log_info("Topological sort size: {}".format(
             self._topo_sort.size))
         for i in range(0, self._topo_sort.size):
@@ -195,6 +223,42 @@ class LMS(object):
                 len(self._swapout_ops), len(self._swapin_ops)))
         self._log_info("Editing model for LMS, took: {} ms".format(
             (time.time()-start_time)*1000))
+
+    def _force_variable_initialization(self, vars):
+        """
+        For each variable, it should be assigned a value before
+        the other ops consumming the variable.
+        But, by analyzing a graph statically, we have no dependency
+        bewteen a Assign operation and other read/write operations.
+        So we need to create dependency explicitly.
+        ```
+        VariableV2:
+          input: None
+          output: reading ops, Assign, writing ops, ...
+        ```
+        """ 
+        init_ops = set()
+        for x in vars:
+            outs = set(self._fanouts(x))
+            assign_ops = {op for op in outs if op.type == "Assign"}
+
+            # initialization op is the first Assign op
+            m = min({self._get_order(op) for op in assign_ops})
+            first_assign_ops = {op for op in assign_ops if self._get_order(op) == m}
+            if len(first_assign_ops) != 1:
+                self._log_info("Variable: {}".format(x.name))
+                self._log_info("Fanout ops: {}".format(
+                    {(op.name, op.type, self._get_order(op))
+                     for op in outs}))
+                raise ValueError(
+                    'Could not find the first assignment for {}'.format(x.name))
+
+            # initialize a variable first
+            for y in outs - first_assign_ops:
+                self._add_control_inputs(y, first_assign_ops)
+            init_ops |= first_assign_ops
+
+        return init_ops
 
     def _do_action(self, src_ops):
         """Add swapin and swapout ops for ops that are reachable from `src_ops`.
@@ -249,21 +313,30 @@ class LMS(object):
 
         def _add_controls(ops1, ops2):
             for op1 in ops1:
-                ge.add_control_inputs(op1, ops2)
+                self._add_control_inputs(op1, ops2)
 
-        if sync_mode in {1, 3}:
+        control_outputs = ge.ControlOutputs(self._graph)
+        if sync_mode in {1, 3} or self._sync_mode > 3:
             dest_ops = {op[1] for op in self._ops_triples}
             for x in dest_ops:
                 x_sins = _sins(x)
-                fs = set(self._fanins(x)) - x_sins
-                _add_controls(x_sins, fs)
+                x_sins_outs = set()
+                x_sins_cins = set()
+                for op in x_sins:
+                    x_sins_outs |= set(self._fanouts(op))
+                    x_sins_cins |= set(op.control_inputs)
+                fs = (set(self._fanins(x)) | set(x.control_inputs)) - x_sins - x_sins_outs
+                _add_controls(x_sins, fs - x_sins_cins)
 
-        if sync_mode in {2, 3}:
+        if sync_mode in {2, 3} or self._sync_mode > 3:
             src_ops = {op[0] for op in self._ops_triples}
             for x in src_ops:
                 x_souts = _souts(x)
-                fs = set(self._fanouts(x)) - x_souts
-                _add_controls(fs, x_souts)
+                fs = (set(self._fanouts(x)) | set(control_outputs.get(x))) - x_souts
+                fs_cins = set()
+                for op in fs:
+                    fs_cins |= set(op.control_inputs)
+                _add_controls(fs, x_souts - fs_cins)
 
     def _groupby(self, ops, limit=5):
         """Group `ops` into groups so that topological distance between
@@ -663,7 +736,7 @@ class LMS(object):
         elif self._sync_mode == 2:
             self._log_info(
                 "sync_mode was turned on for swap-in ops. swapin_ahead will be ignored")
-        elif self._sync_mode == 3:
+        elif self._sync_mode >= 3:
             self._log_info(
                 "sync_mode was turned on for both swap-out and swap-in ops. swapin_ahead will be ignored")
         elif self._sync_mode == 0:
@@ -694,27 +767,17 @@ class LMS(object):
         """
         return ge.get_consuming_ops(op.outputs)
 
-    def _add_control_inputs(self, op1, op2):
-        """Add control dependency from `op2` to `op1`.
+    def _add_control_inputs(self, op, cops):
+        """Add control dependencies from `cops` to `op`.
 
         Args:
-          op1: a `tf.Operation`.
-          op2: a `tf.Operation`.
-
-        Return:
-          True/False.
+          op: a tf.Operation to which the control inputs are added.
+          cops: an object convertible to a list of `tf.Operation`.
+        Raises:
+          TypeError: if op is not a tf.Operation
+          ValueError: if any cop in cops is already a control input of op.
         """
-        if op2 in op1.control_inputs:
-            return False
-
-        if op1 in op2.control_inputs:
-            return False
-
-        if op2 in self._fanouts(op1):
-            return False
-
-        ge.add_control_inputs(op1, op2)
-        return True
+        ge.add_control_inputs(op, cops)
 
     def _connect_ops(self, src_op, dest_op, remap_inputs=False,
                      remap_outputs=False, idx=None, disconnect_first=False):
