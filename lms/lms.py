@@ -422,9 +422,7 @@ class LMS(object):
                 ts_dests[ts] = cands
 
         if ts_dests:
-            self._log_info("Operation: {}, order: {}, type: {}".format(
-                src_op.name, self._get_order(src_op),
-                src_op.type), 1)
+            self._log_info("Operation: {}".format(src_op.name), 1)
         else:
             return
 
@@ -509,9 +507,11 @@ class LMS(object):
         src_out_idx = src_svg.output_index(ts0)
         self._connect_ops(src_op, swap_out.op, remap_outputs=True,
                           idx=src_out_idx)
-        self._log_info("Swap-out: Tensor {} (shape: {}) will be placed on {}".format(
-            ts0.name, ts0.shape, self._cpu_device), 1)
-        self._log_info("Added an edge: {} => {}".format(
+        self._log_info("  Swap-out: Tensor {} (shape: {})".format(
+            ts0.name, ts0.shape), 1)
+        self._log_info("    Swap-out operation: {}".format(
+                swap_out.op.name), 1)
+        self._log_info("    Connect: {} => {}".format(
             src_op.name, swap_out.op.name), 1)
 
         return swap_out.op
@@ -542,6 +542,9 @@ class LMS(object):
         Return:
           A `tf.Operation` newly added to the graph.
         """
+        self._log_info("  Swap-in: Tensor {} (shape: {})".format(
+            ts0.name, ts0.shape), 1)
+
         with ops.device(self._cpu_device):
             swap_in = array_ops.identity(
                 ts0,
@@ -550,6 +553,10 @@ class LMS(object):
 
         # Connect: swap_out -> swap_in
         self._connect_ops(swapout_op, swap_in.op)
+        self._log_info("    Swap-in operation: {}".format(
+            swap_in.op.name), 1)
+        self._log_info("    Connect: {} => {}".format(
+            swapout_op.name, swap_in.op.name), 1)
 
         # Connect: swap_in -> dest_ops
         for dest_op in dest_ops:
@@ -557,9 +564,7 @@ class LMS(object):
             input_idx = dest_svg.input_index(ts0)
             self._connect_ops(swap_in.op, dest_op,
                               remap_inputs=True, idx=input_idx)
-            self._log_info("Swap-in: Tensor {} (shape: {}) for {} (order: {})".format(
-                ts0.name, ts0.shape, dest_op.name, self._get_order(dest_op)), 1)
-            self._log_info("Added an edge: {} => {}".format(
+            self._log_info("    Connect: {} => {}".format(
                 swap_in.op.name, dest_op.name), 1)
         return swap_in.op
 
@@ -616,16 +621,15 @@ class LMS(object):
         re = self._do_direct_order(src_op, dest_op, ahead)
 
         ctrld_op = re[0]
-        ctrld_order = re[1]
         if ctrld_op:
             self._add_control_inputs(swapin_op, ctrld_op)
             self._log_info(
-                "Control dependency: {} (order: {}) -> {} (order: {})".format(
-                    ctrld_op.name, ctrld_order, dest_op.name, self._get_order(dest_op)), 1)
+                "Control dependency: {} => {}".format(
+                    ctrld_op.name, swapin_op.name), 1)
         else:
             self._log_info(
-                "No control dependency op needed for swap in of op {}.".format(
-                    src_op.name), 1)
+                "No control dependency op found for the swap-in {}.".format(
+                    swapin_op.name), 1)
 
     def _do_direct_order(self, fw_op, src_op, distance):
         """Find a control dependency operation using topological sort.
