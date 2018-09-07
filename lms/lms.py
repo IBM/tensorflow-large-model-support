@@ -325,7 +325,21 @@ class LMS(object):
                 self._add_control_inputs(op1, ops2)
 
         control_outputs = ge.ControlOutputs(self._graph)
+        # sync for swap-out ops
         if sync_mode in {1, 3}:
+            src_ops = {op[0] for op in self._ops_triples}
+            for x in src_ops:
+                x_souts = _souts(x)
+                fs = set(self._fanouts(x)) | set(control_outputs.get(x))
+                fs -= x_souts
+                fs_cins = set()
+                for op in fs:
+                    fs_cins |= set(op.control_inputs)
+                _add_controls(fs, x_souts - fs_cins)
+                control_outputs.update()
+
+        # sync for swap-in ops
+        if sync_mode in {2, 3}:
             dest_ops = {op[1] for op in self._ops_triples}
             for x in dest_ops:
                 x_sins = _sins(x)
@@ -337,18 +351,6 @@ class LMS(object):
                 fs = set(self._fanins(x)) | set(x.control_inputs)
                 fs -= (x_sins | x_sins_outs | x_sins_cins)
                 _add_controls(x_sins, fs)
-                control_outputs.update()
-                
-        if sync_mode in {2, 3}:
-            src_ops = {op[0] for op in self._ops_triples}
-            for x in src_ops:
-                x_souts = _souts(x)
-                fs = set(self._fanouts(x)) | set(control_outputs.get(x))
-                fs -= x_souts
-                fs_cins = set()
-                for op in fs:
-                    fs_cins |= set(op.control_inputs)
-                _add_controls(fs, x_souts - fs_cins)
                 control_outputs.update()
 
     def _groupby(self, ops, limit=5):
