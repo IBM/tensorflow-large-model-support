@@ -511,7 +511,7 @@ class LMS(object):
                           idx=src_out_idx)
         self._log_info("Swap-out: Tensor {} (shape: {}) will be placed on {}".format(
             ts0.name, ts0.shape, self._cpu_device), 1)
-        self._log_info("Added a edge: {} => {}".format(
+        self._log_info("Added an edge: {} => {}".format(
             src_op.name, swap_out.op.name), 1)
 
         return swap_out.op
@@ -559,7 +559,7 @@ class LMS(object):
                               remap_inputs=True, idx=input_idx)
             self._log_info("Swap-in: Tensor {} (shape: {}) for {} (order: {})".format(
                 ts0.name, ts0.shape, dest_op.name, self._get_order(dest_op)), 1)
-            self._log_info("Added a edge: {} => {}".format(
+            self._log_info("Added an edge: {} => {}".format(
                 swap_in.op.name, dest_op.name), 1)
         return swap_in.op
 
