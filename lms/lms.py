@@ -51,6 +51,7 @@ class LMS(object):
                  swapin_groupby=0,
                  swapin_ahead=-1,
                  sync_mode=0,
+                 serialize_from=-1,
                  debug=False,
                  debug_level=1,
                  cpu_device="/cpu:0"):
@@ -80,6 +81,10 @@ class LMS(object):
           sync_mode: whether overlap data transfer and kernel computation
             or not. Four modes: `0` turn off. `1` only swap-out ops. `2` only
             swap-inops. `3` both swap-out and swap-in. Default `0`.
+          serialize_from: serialize operations at the same level in the
+            topological sort. Levels starting from `serialize_from`
+            to the end of the topological sort are serialized.
+            Default `-1` (turn off).
           debug: debug mode for LMS. Default `False`.
           debug_level: debug level for LMS (1 or 2). Default `1`.
           cpu_device: the device we would like swap tensors to.
@@ -93,9 +98,10 @@ class LMS(object):
         self._swapout_threshold = swapout_threshold
         self._swapin_groupby = swapin_groupby
         self._swapin_ahead = swapin_ahead
-        if sync_mode < 0:
+        if sync_mode not in {0, 1, 2, 3}:
             raise ValueError('Invalid value for sync_mode')
         self._sync_mode = sync_mode
+        self._serialize_from = serialize_from
 
         # https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/framework/graph_util_impl.py
         self._variable_ops = {
@@ -181,20 +187,20 @@ class LMS(object):
         # build a topological sort
         self._topo_sort = topos.TOPOS(all_ops)
         self._topo_sort.build()
-        if self._sync_mode > 3:
+        if self._serialize_from >= 0:
             init_ops = self._force_variable_initialization(
-                {op for op in all_ops if op.type in {'Variable', 'VariableV2'}})
+                {op for op in all_ops
+                 if op.type in {'Variable', 'VariableV2'}})
             if len(init_ops) > 0:
                 # when are all variables initialized?
                 self._topo_sort.reset()
                 self._topo_sort.build()
                 m = max({self._get_order(op) for op in init_ops})
-                self._sync_mode = max(m+1, self._sync_mode)
-            # oops! looks like `sync_mode` has a secret role!!!
+                self._serialize_from = max(m+1, self._serialize_from)
             self._log_info("Serialize the topological sort from " +
                            "level {} to level {} (last level)".format(
-                               self._sync_mode, self._topo_sort.size))
-            self._topo_sort.serialize_from(self._sync_mode)
+                               self._serialize_from, self._topo_sort.size))
+            self._topo_sort.serialize_from(self._serialize_from)
 
         self._log_info("Topological sort size: {}".format(
             self._topo_sort.size))
@@ -244,7 +250,10 @@ class LMS(object):
 
             # initialization op is the first Assign op
             m = min({self._get_order(op) for op in assign_ops})
-            first_assign_ops = {op for op in assign_ops if self._get_order(op) == m}
+            first_assign_ops = {
+                op for op in assign_ops
+                if self._get_order(op) == m
+            }
             if len(first_assign_ops) != 1:
                 self._log_info("Variable: {}".format(x.name))
                 self._log_info("Fanout ops: {}".format(
@@ -253,7 +262,7 @@ class LMS(object):
                 raise ValueError(
                     'Could not find the first assignment for {}'.format(x.name))
 
-            # initialize a variable first
+            # initialize the variable first
             for y in outs - first_assign_ops:
                 self._add_control_inputs(y, first_assign_ops)
             init_ops |= first_assign_ops
@@ -316,7 +325,7 @@ class LMS(object):
                 self._add_control_inputs(op1, ops2)
 
         control_outputs = ge.ControlOutputs(self._graph)
-        if sync_mode in {1, 3} or self._sync_mode > 3:
+        if sync_mode in {1, 3}:
             dest_ops = {op[1] for op in self._ops_triples}
             for x in dest_ops:
                 x_sins = _sins(x)
@@ -325,18 +334,22 @@ class LMS(object):
                 for op in x_sins:
                     x_sins_outs |= set(self._fanouts(op))
                     x_sins_cins |= set(op.control_inputs)
-                fs = (set(self._fanins(x)) | set(x.control_inputs)) - x_sins - x_sins_outs
-                _add_controls(x_sins, fs - x_sins_cins)
-
-        if sync_mode in {2, 3} or self._sync_mode > 3:
+                fs = set(self._fanins(x)) | set(x.control_inputs)
+                fs -= (x_sins | x_sins_outs | x_sins_cins)
+                _add_controls(x_sins, fs)
+                control_outputs.update()
+                
+        if sync_mode in {2, 3}:
             src_ops = {op[0] for op in self._ops_triples}
             for x in src_ops:
                 x_souts = _souts(x)
-                fs = (set(self._fanouts(x)) | set(control_outputs.get(x))) - x_souts
+                fs = set(self._fanouts(x)) | set(control_outputs.get(x))
+                fs -= x_souts
                 fs_cins = set()
                 for op in fs:
                     fs_cins |= set(op.control_inputs)
                 _add_controls(fs, x_souts - fs_cins)
+                control_outputs.update()
 
     def _groupby(self, ops, limit=5):
         """Group `ops` into groups so that topological distance between
@@ -496,6 +509,8 @@ class LMS(object):
                           idx=src_out_idx)
         self._log_info("Swap-out: Tensor {} (shape: {}) will be placed on {}".format(
             ts0.name, ts0.shape, self._cpu_device), 1)
+        self._log_info("Added a edge: {} => {}".format(
+            src_op.name, swap_out.op.name), 1)
 
         return swap_out.op
 
@@ -542,7 +557,8 @@ class LMS(object):
                               remap_inputs=True, idx=input_idx)
             self._log_info("Swap-in: Tensor {} (shape: {}) for {} (order: {})".format(
                 ts0.name, ts0.shape, dest_op.name, self._get_order(dest_op)), 1)
-
+            self._log_info("Added a edge: {} => {}".format(
+                swap_in.op.name, dest_op.name), 1)
         return swap_in.op
 
     def _add_control_dependencies(self):
@@ -735,10 +751,12 @@ class LMS(object):
                 "auto mode" if self._swapin_ahead < 0 else self._swapin_ahead))
         elif self._sync_mode == 2:
             self._log_info(
-                "sync_mode was turned on for swap-in ops. swapin_ahead will be ignored")
+                "sync_mode was turned on for swap-in ops. " +
+                "swapin_ahead will be ignored")
         elif self._sync_mode >= 3:
             self._log_info(
-                "sync_mode was turned on for both swap-out and swap-in ops. swapin_ahead will be ignored")
+                "sync_mode was turned on for both swap-out and swap-in ops. " +
+                "swapin_ahead will be ignored")
         elif self._sync_mode == 0:
             self._log_info("swapin_ahead: {}".format(
                 "auto mode" if self._swapin_ahead < 0 else self._swapin_ahead))
