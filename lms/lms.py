@@ -152,6 +152,9 @@ class LMS(object):
         # store information to be used to adding control dependencies
         self._ops_triples = []  # [(src_op, dest_op, swapin_op)]
 
+        # control outputs topology
+        self._control_outputs = None
+
     def run(self, graph=None):
         """Edit the graph by adding swapin and swapout ops.
 
@@ -208,6 +211,9 @@ class LMS(object):
             self._log_info("[{}]: {}".format(
                 i, [(op.name, op.type)
                     for op in self._get_ops_by_order(i)]), 1)
+
+        # get control outputs topology
+        self._control_outputs = ge.ControlOutputs(self._graph)
 
         # roughly estimate swapin_threshold in auto mode
         if self._swapout_threshold < 0:
@@ -314,45 +320,55 @@ class LMS(object):
     def _sync_ops(self, sync_mode):
         """TODO: write comment
         """
-        def _souts(op):
-            return set(self._fanouts(op)) & self._swapout_ops
-
-        def _sins(op):
-            return set(self._fanins(op)) & self._swapin_ops
-
-        def _add_controls(ops1, ops2):
-            for op1 in ops1:
-                self._add_control_inputs(op1, ops2)
-
-        control_outputs = ge.ControlOutputs(self._graph)
+        # make sure we are working with the latest control outputs tooplogy
+        self._update_control_outputs()
         # sync for swap-out ops
         if sync_mode in {1, 3}:
             src_ops = {op[0] for op in self._ops_triples}
             for x in src_ops:
-                x_souts = _souts(x)
-                fs = set(self._fanouts(x)) | set(control_outputs.get(x))
-                fs -= x_souts
-                fs_cins = set()
-                for op in fs:
-                    fs_cins |= set(op.control_inputs)
-                _add_controls(fs, x_souts - fs_cins)
-                control_outputs.update()
+                self._sync_ops(x)
+                self._update_control_outputs()
 
         # sync for swap-in ops
         if sync_mode in {2, 3}:
             dest_ops = {op[1] for op in self._ops_triples}
             for x in dest_ops:
-                x_sins = _sins(x)
-                x_sins_outs = set()
-                x_sins_cins = set()
-                for op in x_sins:
-                    x_sins_outs |= set(self._fanouts(op))
-                    x_sins_cins |= set(op.control_inputs)
-                fs = set(self._fanins(x)) | set(x.control_inputs)
-                fs -= (x_sins | x_sins_outs | x_sins_cins)
-                _add_controls(x_sins, fs)
-                control_outputs.update()
+                self._sync_swapin(x)
+                self._update_control_outputs()
 
+    def _sync_swapout(self, x):
+        """TODO: write comment
+        """
+        def _souts(op):
+            return set(self._fanouts(op)) & self._swapout_ops
+
+        x_souts = _souts(x)
+        fs = set(self._fanouts(x)) | set(self._get_control_outputs.get(x))
+        fs -= x_souts
+        fs_cins = set()
+        for op in fs:
+            fs_cins |= set(op.control_inputs)
+
+        for op in fs:
+            self._add_control_inputs(op, x_souts - fs_cins)
+
+    def _sync_swapin(self, x):
+        """TODO: write comment
+        """
+        def _sins(op):
+            return set(self._fanins(op)) & self._swapin_ops
+
+        x_sins = _sins(x)
+        x_sins_outs = set()
+        x_sins_cins = set()
+        for op in x_sins:
+            x_sins_outs |= set(self._fanouts(op))
+            x_sins_cins |= set(op.control_inputs)
+        fs = set(self._fanins(x)) | set(x.control_inputs)
+        fs -= (x_sins | x_sins_outs | x_sins_cins)
+        for op in x_sins:
+            self._add_control_inputs(op, fs)
+        
     def _groupby(self, ops, limit=5):
         """Group `ops` into groups so that topological distance between
         two consecutive ops in a group is within `limit`.
@@ -623,9 +639,6 @@ class LMS(object):
         ctrld_op = re[0]
         if ctrld_op:
             self._add_control_inputs(swapin_op, ctrld_op)
-            self._log_info(
-                "Control dependency: {} => {}".format(
-                    ctrld_op.name, swapin_op.name), 1)
         else:
             self._log_info(
                 "No control dependency op found for the swap-in {}.".format(
@@ -791,6 +804,16 @@ class LMS(object):
         """
         return ge.get_consuming_ops(op.outputs)
 
+    def _get_control_outputs(self, op):
+        """TODO: write comment
+        """
+        return self._control_outputs.get(op)
+
+    def _update_control_outputs(self):
+        """TODO: write comment
+        """
+        self._control_outputs.update()
+    
     def _add_control_inputs(self, op, cops):
         """Add control dependencies from `cops` to `op`.
 
@@ -802,6 +825,15 @@ class LMS(object):
           ValueError: if any cop in cops is already a control input of op.
         """
         ge.add_control_inputs(op, cops)
+        if not util.is_iterable(cops):
+            self._log_info(
+                "Control dependency: {} => {}".format(
+                    cops.name, op.name), 1)
+        else:
+            for cop in cops:
+                self._log_info(
+                    "Control dependency: {} => {}".format(
+                        cop.name, op.name), 1)
 
     def _connect_ops(self, src_op, dest_op, remap_inputs=False,
                      remap_outputs=False, idx=None, disconnect_first=False):
