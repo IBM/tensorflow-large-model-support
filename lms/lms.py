@@ -320,10 +320,10 @@ class LMS(object):
     def _sync_ops(self, sync_mode):
         """TODO: write comment
         """
-        # make sure we are working with the latest control outputs tooplogy
-        self._update_control_outputs()
         # sync for swap-out ops
         if sync_mode in {1, 3}:
+            # make sure we are working with the latest control outputs topology
+            self._update_control_outputs()
             src_ops = {op[0] for op in self._ops_triples}
             for x in src_ops:
                 self._sync_ops(x)
@@ -334,10 +334,11 @@ class LMS(object):
             dest_ops = {op[1] for op in self._ops_triples}
             for x in dest_ops:
                 self._sync_swapin(x)
-                self._update_control_outputs()
 
     def _sync_swapout(self, x):
         """TODO: write comment
+        Need to update control outputs topology before calling
+        this method
         """
         def _souts(op):
             return set(self._fanouts(op)) & self._swapout_ops
@@ -643,6 +644,10 @@ class LMS(object):
             self._log_info(
                 "No control dependency op found for the swap-in {}.".format(
                     swapin_op.name), 1)
+            self._log_info(
+                "  Do synchronization for the swap-in {}.".format(
+                    swapin_op.name), 1)
+            self._sync_swapin(dest_op)
 
     def _do_direct_order(self, fw_op, src_op, distance):
         """Find a control dependency operation using topological sort.
