@@ -475,7 +475,7 @@ class LMS(object):
         """
         # create a swap_out node
         swapout_op = self._add_swapout(src_op, ts)
-        self._add_control_inputs(swapout_op, src_op)
+        self._add_control_inputs(swapout_op, src_op, offset=4)
 
         # create swap_in nodes
         dest_sin = set()
@@ -524,12 +524,12 @@ class LMS(object):
         src_out_idx = src_svg.output_index(ts0)
         self._connect_ops(src_op, swap_out.op, remap_outputs=True,
                           idx=src_out_idx)
-        self._log_info("  Swap-out: Tensor {} (shape: {})".format(
-            ts0.name, ts0.shape), 1)
-        self._log_info("    Swap-out operation: {}".format(
-                swap_out.op.name), 1)
-        self._log_info("    Connect: {} => {}".format(
-            src_op.name, swap_out.op.name), 1)
+        self._log_info("Swap-out: Tensor {} (shape: {})".format(
+            ts0.name, ts0.shape), 1, 2)
+        self._log_info("Swap-out operation: {}".format(
+                swap_out.op.name), 1, 4)
+        self._log_info("Connect: {} => {}".format(
+            src_op.name, swap_out.op.name), 1, 4)
 
         return swap_out.op
 
@@ -559,8 +559,8 @@ class LMS(object):
         Return:
           A `tf.Operation` newly added to the graph.
         """
-        self._log_info("  Swap-in: Tensor {} (shape: {})".format(
-            ts0.name, ts0.shape), 1)
+        self._log_info("Swap-in: Tensor {} (shape: {})".format(
+            ts0.name, ts0.shape), 1, 2)
 
         with ops.device(self._cpu_device):
             swap_in = array_ops.identity(
@@ -570,10 +570,10 @@ class LMS(object):
 
         # Connect: swap_out -> swap_in
         self._connect_ops(swapout_op, swap_in.op)
-        self._log_info("    Swap-in operation: {}".format(
-            swap_in.op.name), 1)
-        self._log_info("    Connect: {} => {}".format(
-            swapout_op.name, swap_in.op.name), 1)
+        self._log_info("Swap-in operation: {}".format(
+            swap_in.op.name), 1, 4)
+        self._log_info("Connect: {} => {}".format(
+            swapout_op.name, swap_in.op.name), 1, 4)
 
         # Connect: swap_in -> dest_ops
         for dest_op in dest_ops:
@@ -581,8 +581,8 @@ class LMS(object):
             input_idx = dest_svg.input_index(ts0)
             self._connect_ops(swap_in.op, dest_op,
                               remap_inputs=True, idx=input_idx)
-            self._log_info("    Connect: {} => {}".format(
-                swap_in.op.name, dest_op.name), 1)
+            self._log_info("Connect: {} => {}".format(
+                swap_in.op.name, dest_op.name), 1, 4)
         return swap_in.op
 
     def _add_control_dependencies(self):
@@ -645,8 +645,8 @@ class LMS(object):
                 "No control dependency op found for the swap-in {}.".format(
                     swapin_op.name), 1)
             self._log_info(
-                "  Do synchronization for the swap-in {}.".format(
-                    swapin_op.name), 1)
+                "Do synchronization for the swap-in {}.".format(
+                    swapin_op.name), 1, 2)
             self._sync_swapin(dest_op)
 
     def _do_direct_order(self, fw_op, src_op, distance):
@@ -751,7 +751,7 @@ class LMS(object):
         """
         return self._topo_sort.get_ops(order)
 
-    def _log_info(self, message, level=0):
+    def _log_info(self, message, level=0, offset=1):
         """Log debug information.
 
         Args:
@@ -761,7 +761,9 @@ class LMS(object):
         if level == 0 or (self._debug and self._debug_level >= level):
             # Use tf_logging.info instead of print, since print
             # is not thread safe, which can break tests.
-            tf_logging.info("[LMS][{}] {}".format(level, message))
+            tf_logging.info("[LMS][{}]".format(level) +
+                            ' '*offset +
+                            "{}".format(message))
 
     def _print_configuration(self):
         """Print configuration information about LMS.
@@ -819,7 +821,7 @@ class LMS(object):
         """
         self._control_outputs.update()
     
-    def _add_control_inputs(self, op, cops):
+    def _add_control_inputs(self, op, cops, offset=0):
         """Add control dependencies from `cops` to `op`.
 
         Args:
@@ -833,12 +835,12 @@ class LMS(object):
         if not util.is_iterable(cops):
             self._log_info(
                 "Control dependency: {} => {}".format(
-                    cops.name, op.name), 1)
+                    cops.name, op.name), 1, offset)
         else:
             for cop in cops:
                 self._log_info(
                     "Control dependency: {} => {}".format(
-                        cop.name, op.name), 1)
+                        cop.name, op.name), 1, offset)
 
     def _connect_ops(self, src_op, dest_op, remap_inputs=False,
                      remap_outputs=False, idx=None, disconnect_first=False):
