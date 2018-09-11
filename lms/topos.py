@@ -18,8 +18,7 @@
 from six.moves import queue as Queue
 import toposort
 
-import tensorflow.contrib.graph_editor as ge
-from tensorflow.contrib.graph_editor import util
+from lms import util as ut
 
 
 class TOPOS(object):
@@ -62,13 +61,11 @@ class TOPOS(object):
 
             # do action for src_op
             dep_ops = set(src_op.control_inputs)
-            for t in src_op.inputs:
-                dep_ops |= set(util.get_generating_ops(t))
+            dep_ops |= ut.fanins(src_op)
             dep_dict[src_op] = dep_ops
 
             next_ops = set()
-            for t in src_op.outputs:
-                next_ops |= set(util.get_consuming_ops(t))
+            next_ops |= ut.fanouts(src_op)
             for op in next_ops:
                 if op in closed_set:
                     continue
@@ -119,12 +116,12 @@ class TOPOS(object):
             k_ops = head_ops
             if len(prev_k_ops) > 0:
                 for op in k_ops:
-                    ge.add_control_inputs(
+                    ut.add_control_inputs(
                         op,
                         prev_k_ops - set(op.control_inputs))
 
             for op in tail_ops:
-                ge.add_control_inputs(
+                ut.add_control_inputs(
                     op,
                     k_ops - set(op.control_inputs))
                 k_ops = {op}

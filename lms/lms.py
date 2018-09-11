@@ -14,8 +14,6 @@
 # ==============================================================================
 """LMS
 """
-import tensorflow.contrib.graph_editor as ge
-from tensorflow.contrib.graph_editor import util
 from tensorflow.python.platform import tf_logging
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
@@ -23,6 +21,7 @@ from tensorflow.python.ops import array_ops
 import time
 from six.moves import queue as Queue
 from lms import topos
+from lms import util as ut
 
 
 class LMS(object):
@@ -146,14 +145,12 @@ class LMS(object):
         self._swapout_ops = set()
         self._swapin_ops = set()
 
-        # store a dictionary of visited ops to avoid multiple visits
-        self._ops_dict = {}
-
         # store information to be used to adding control dependencies
         self._ops_triples = []  # [(src_op, dest_op, swapin_op)]
 
         # control outputs topology
         self._control_outputs = None
+        self._version = None
 
     def run(self, graph=None):
         """Edit the graph by adding swapin and swapout ops.
@@ -172,11 +169,12 @@ class LMS(object):
         if not self._graph:
             raise ValueError('The dataflow graph is required but has not been'
                              ' provided.')
+        self._version = self._graph.version
 
         self._log_info("Editing model for LMS")
         start_time = time.time()
 
-        all_ops = ge.make_list_of_op(self._graph)
+        all_ops = self._graph.get_operations()
         self._log_info(
             "The graph has {} ops in total".format(len(all_ops), 1))
 
@@ -213,7 +211,7 @@ class LMS(object):
                     for op in self._get_ops_by_order(i)]), 1)
 
         # get control outputs topology
-        self._control_outputs = ge.ControlOutputs(self._graph)
+        self._control_outputs = ut.build_control_outputs(self._graph)
 
         # roughly estimate swapin_threshold in auto mode
         if self._swapout_threshold < 0:
@@ -251,7 +249,7 @@ class LMS(object):
         """ 
         init_ops = set()
         for x in vars:
-            outs = set(self._fanouts(x))
+            outs = ut.fanouts(x)
             assign_ops = {op for op in outs if op.type == "Assign"}
 
             # initialization op is the first Assign op
@@ -291,7 +289,7 @@ class LMS(object):
             src_op = open_set.get()
 
             # get next ops before the graph is changed
-            next_ops = set(self._fanouts(src_op))
+            next_ops = ut.fanouts(src_op)
 
             # do action for src_op
             # bypass excluded ops
@@ -341,10 +339,10 @@ class LMS(object):
         this method
         """
         def _souts(op):
-            return set(self._fanouts(op)) & self._swapout_ops
+            return ut.fanouts(op) & self._swapout_ops
 
         x_souts = _souts(x)
-        fs = set(self._fanouts(x)) | set(self._get_control_outputs(x))
+        fs = ut.fanouts(x) | self._get_control_outputs(x)
         fs -= x_souts
         fs_cins = set()
         for op in fs:
@@ -357,15 +355,14 @@ class LMS(object):
         """TODO: write comment
         """
         def _sins(op):
-            return set(self._fanins(op)) & self._swapin_ops
+            return ut.fanins(op) & self._swapin_ops
 
         x_sins = _sins(x)
         x_sins_outs = set()
         x_sins_cins = set()
         for op in x_sins:
-            x_sins_outs |= set(self._fanouts(op))
             x_sins_cins |= set(op.control_inputs)
-        fs = set(self._fanins(x)) | set(x.control_inputs)
+        fs = ut.fanins(x) | set(x.control_inputs)
         fs -= (x_sins | x_sins_outs | x_sins_cins)
         for op in x_sins:
             self._add_control_inputs(op, fs)
@@ -430,7 +427,7 @@ class LMS(object):
             # greater than threshold
             cands = [
                 op
-                for op in util.get_consuming_ops(ts)
+                for op in ts.consumers()
                 if self._get_order(op) - src_op_order > self._swapout_threshold
             ]
             if len(cands) == 0:
@@ -520,10 +517,7 @@ class LMS(object):
                     ts0.name.replace("/", "_").replace(":", "_")))
 
         # Connect: src-node -> swap-out
-        src_svg = ge.sgv(src_op, graph=self._graph)
-        src_out_idx = src_svg.output_index(ts0)
-        self._connect_ops(src_op, swap_out.op, remap_outputs=True,
-                          idx=src_out_idx)
+        ut.reroute_input(ts0, swap_out.op.inputs[0], swap_out.op)
         self._log_info("Swap-out: Tensor {} (shape: {})".format(
             ts0.name, ts0.shape), 1, 2)
         self._log_info("Swap-out operation: {}".format(
@@ -569,7 +563,8 @@ class LMS(object):
                     ts0.name.replace("/", "_").replace(":", "_")))
 
         # Connect: swap_out -> swap_in
-        self._connect_ops(swapout_op, swap_in.op)
+        ut.reroute_input(swapout_op.outputs[0],
+                         swap_in.op.inputs[0], swap_in.op)
         self._log_info("Swap-in operation: {}".format(
             swap_in.op.name), 1, 4)
         self._log_info("Connect: {} => {}".format(
@@ -577,10 +572,7 @@ class LMS(object):
 
         # Connect: swap_in -> dest_ops
         for dest_op in dest_ops:
-            dest_svg = ge.sgv(dest_op, graph=self._graph)
-            input_idx = dest_svg.input_index(ts0)
-            self._connect_ops(swap_in.op, dest_op,
-                              remap_inputs=True, idx=input_idx)
+            ut.reroute_input(swap_in.op.outputs[0], ts0, dest_op)
             self._log_info("Connect: {} => {}".format(
                 swap_in.op.name, dest_op.name), 1, 4)
         return swap_in.op
@@ -680,7 +672,7 @@ class LMS(object):
             # on the chain rule path
             candidates = {op
                           for op in candidates
-                          if src_op in set(self._get_forward_walk_ops(op))}
+                          if self._is_reachable(op, src_op)}
             candidates = {op
                           for op in candidates
                           if "/cond/" not in op.name}
@@ -707,27 +699,45 @@ class LMS(object):
         """
         ops = set()
         for scope in scopes:
-            ops |= set(ge.get_name_scope_ops(within_ops, scope))
+            ops |= {op for op in within_ops
+                    if scope in op.name}
         ops |= {op
                 for op in within_ops
                 if op.type in types}
         return ops
 
-    def _get_forward_walk_ops(self, op, inclusive=True):
-        """ A wrapper of `tensorflow.contrib.graph_editor.get_forward_walk_ops`
+    def _is_reachable(self, src_op, dest_op):
+        """Check whether there exists a path from src_op to dest_op
+        Args:
+          src_op: a starting operation.
+          dest_op: a destination operation.
+
+        Return:
+          True/False.
         """
-        if op in self._ops_dict:
-            if inclusive:
-                return self._ops_dict[op]
+        ret = False
+        dest_ord = self._get_order(dest_op)
+
+        open_set = Queue.Queue()
+        open_set.put(src_op)
+
+        closed_set = set()
+        while not open_set.empty():
+            src_op = open_set.get()
+            next_ops = ut.fanouts(src_op)
+            next_ops |= self._get_control_outputs(src_op)
+            
+            next_ops = {op for op in next_ops
+                        if self._get_order(op) <= dest_ord}
+            if dest_op in next_ops:
+                return True
             else:
-                return list(set(self._ops_dict[op]) - {op})
-        else:
-            ret = ge.get_forward_walk_ops(op)
-            self._ops_dict[op] = ret
-            if inclusive:
-                return ret
-            else:
-                return list(set(ret) - {op})
+                for nop in next_ops:
+                    if nop in closed_set:
+                        continue
+                    else:
+                        open_set.put(nop)
+        return ret
 
     def _get_order(self, op):
         """Return the topological order of an operation.
@@ -789,37 +799,19 @@ class LMS(object):
         else:
             pass
 
-    def _fanins(self, op):
-        """Return all incomming operations.
-
-        Args:
-          op: a `tf.Operation`.
-
-        Return:
-          A list of `tf.Operation`.
-        """
-        return ge.get_generating_ops(op.inputs)
-
-    def _fanouts(self, op):
-        """Return all outgoing operations.
-
-        Args:
-          op: a `tf.Operation`.
-
-        Return:
-          A list of `tf.Operation`.
-        """
-        return ge.get_consuming_ops(op.outputs)
-
     def _get_control_outputs(self, op):
-        """TODO: write comment
+        """Return a set of control outputs of an operation
         """
-        return self._control_outputs.get(op)
+        if op in self._control_outputs:
+            return self._control_outputs[op]
+        else:
+            return set()
 
     def _update_control_outputs(self):
-        """TODO: write comment
+        """Update the control_outputs dictionary
         """
-        self._control_outputs.update()
+        if self._version != self._graph.version:
+            self._control_outputs = ut.build_control_outputs(self._graph)
     
     def _add_control_inputs(self, op, cops, offset=0):
         """Add control dependencies from `cops` to `op`.
@@ -831,8 +823,14 @@ class LMS(object):
           TypeError: if op is not a tf.Operation
           ValueError: if any cop in cops is already a control input of op.
         """
-        ge.add_control_inputs(op, cops)
-        if not util.is_iterable(cops):
+        ut.add_control_inputs(op, cops)
+        flag = True
+        try:
+            _ = iter(cops)
+        except Exception:  # pylint: disable=broad-except
+            flag = False
+
+        if not flag:
             self._log_info(
                 "Control dependency: {} => {}".format(
                     cops.name, op.name), 1, offset)
@@ -841,27 +839,3 @@ class LMS(object):
                 self._log_info(
                     "Control dependency: {} => {}".format(
                         cop.name, op.name), 1, offset)
-
-    def _connect_ops(self, src_op, dest_op, remap_inputs=False,
-                     remap_outputs=False, idx=None, disconnect_first=False):
-        """A wrapper of `tensorflow.contrib.graph_editor.connect`.
-
-        This method does an in-place modification to the graph.
-
-        Args:
-          src_op: a `tf.Operation`.
-          dest_op: a `tf.Operation`.
-          remap_inputs: remap the input of `dest_op` or not.
-          remap_outputs: remap the output of `src_op` or not.
-          idx: index of input or output tensor.
-          disconnect_first: True means the current outputs of sgv0 are
-            disconnected.
-        """
-        src_sgv = ge.sgv(src_op, graph=self._graph)
-        dest_sgv = ge.sgv(dest_op, graph=self._graph)
-        if remap_outputs:
-            src_sgv = src_sgv.remap_outputs([idx])
-        if remap_inputs:
-            dest_sgv = dest_sgv.remap_inputs([idx])
-
-        ge.connect(src_sgv, dest_sgv, disconnect_first)
