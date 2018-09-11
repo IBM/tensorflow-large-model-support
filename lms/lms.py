@@ -77,9 +77,10 @@ class LMS(object):
           swapin_ahead: lower-bound value for LMS. A tensor will be swapped in
             during the backward phase at least `swapin_ahead` nodes before it
             in the graph. Default `-1` (auto mode).
-          sync_mode: whether overlap data transfer and kernel computation
-            or not. Four modes: `0` turn off. `1` only swap-out ops. `2` only
-            swap-inops. `3` both swap-out and swap-in. Default `0`.
+          sync_mode: whether do synchronization between data transfer and
+            kernel computation or not. Four modes: `0` turn off. `1` sync for
+            only swap-out ops. `2` sync for only swap-in ops. `3` sync for both
+            swap-out and swap-in ops. Default `0`.
           serialize_from: serialize operations at the same level in the
             topological sort. Levels starting from `serialize_from`
             to the end of the topological sort are serialized.
