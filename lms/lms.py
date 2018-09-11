@@ -326,7 +326,7 @@ class LMS(object):
             self._update_control_outputs()
             src_ops = {op[0] for op in self._ops_triples}
             for x in src_ops:
-                self._sync_ops(x)
+                self._sync_swapout(x)
                 self._update_control_outputs()
 
         # sync for swap-in ops
@@ -344,7 +344,7 @@ class LMS(object):
             return set(self._fanouts(op)) & self._swapout_ops
 
         x_souts = _souts(x)
-        fs = set(self._fanouts(x)) | set(self._get_control_outputs.get(x))
+        fs = set(self._fanouts(x)) | set(self._get_control_outputs(x))
         fs -= x_souts
         fs_cins = set()
         for op in fs:
