@@ -322,11 +322,10 @@ class LMS(object):
         # sync for swap-out ops
         if sync_mode in {1, 3}:
             # make sure we are working with the latest control outputs topology
-            self._update_control_outputs()
+            self._rebuild_control_outputs()
             src_ops = {op[0] for op in self._ops_triples}
             for x in src_ops:
                 self._sync_swapout(x)
-                self._update_control_outputs()
 
         # sync for swap-in ops
         if sync_mode in {2, 3}:
@@ -349,8 +348,10 @@ class LMS(object):
         for op in fs:
             fs_cins |= set(op.control_inputs)
 
+        cins = x_souts - fs_cins
         for op in fs:
-            self._add_control_inputs(op, x_souts - fs_cins)
+            self._add_control_inputs(op, cins)
+        self._update_control_outputs(cins, fs)
 
     def _sync_swapin(self, x):
         """TODO: write comment
@@ -801,18 +802,28 @@ class LMS(object):
             pass
 
     def _get_control_outputs(self, op):
-        """Return a set of control outputs of an operation
+        """Return a set of control outputs of an operation.
         """
         if op in self._control_outputs:
             return self._control_outputs[op]
         else:
             return set()
 
-    def _update_control_outputs(self):
-        """Update the control_outputs dictionary
+    def _rebuild_control_outputs(self):
+        """Rebuild the control_outputs dictionary if there are ops added
+        to the graph.
         """
         if self._version != self._graph.version:
             self._control_outputs = ut.build_control_outputs(self._graph)
+
+    def _update_control_outputs(self, ops, couts):
+        """Update control_output sets for operations in `ops`.
+        """
+        for op in ops:
+            if op in self._control_outputs:
+                self._control_outputs[op] |= couts
+            else:
+                self._control_outputs[op] = couts
     
     def _add_control_inputs(self, op, cops, offset=0):
         """Add control dependencies from `cops` to `op`.
