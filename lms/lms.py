@@ -176,6 +176,11 @@ class LMS(object):
         start_time = time.time()
 
         all_ops = self._graph.get_operations()
+        for op in all_ops:
+            if 'lms/swap' in op.name:
+                self._log_info('This model has already been updated with LMS '
+                               'swap operations. LMS will not re-process it.')
+                return
         self._log_info(
             "The graph has {} ops in total".format(len(all_ops), 1))
 
