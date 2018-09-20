@@ -301,7 +301,7 @@ class LMS(object):
             # bypass excluded ops
             if src_op in self._excl_ops:
                 pass
-            elif self._get_order(src_op) is None:
+            elif self._get_order(src_op) < 0:
                 pass
             elif self._incl_ops:
                 # if inclusive mode is enabled,
@@ -755,7 +755,11 @@ class LMS(object):
         Return:
           an integer.
         """
-        return self._topo_sort.get_order(op)
+        ret = self._topo_sort.get_order(op)
+        if ret is None:
+            return -1
+        else:
+            return ret
 
     def _get_ops_by_order(self, order):
         """Return a set of ops with the given order.
