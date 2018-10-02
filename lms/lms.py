@@ -176,13 +176,18 @@ class LMS(object):
         start_time = time.time()
 
         all_ops = self._graph.get_operations()
+        n_edges = 0
         for op in all_ops:
             if 'lms/swap' in op.name:
                 self._log_info('This model has already been updated with LMS '
                                'swap operations. LMS will not re-process it.')
                 return
+            for op1 in ut.fanouts(op):
+                n_edges += 1
         self._log_info(
-            "The graph has {} ops in total".format(len(all_ops), 1))
+            "The graph has {} vertices and {} edges.".format(
+                len(all_ops), n_edges)
+        )
 
         # exclusive ops
         self._excl_ops = self._filter_scopes_and_types(
@@ -225,6 +230,7 @@ class LMS(object):
             self._swapout_threshold = self._topo_sort.size//2
 
         self._print_configuration()
+        self._log_histogram()  # build a histogram of distance
         self._do_action(all_ops)  # add swapout/swapin ops
 
         if self._sync_mode == 0:  # async mode
@@ -860,3 +866,33 @@ class LMS(object):
                 self._log_info(
                     "Control dependency: {} => {}".format(
                         cop.name, op.name), 1, offset)
+
+    def _log_histogram(self):
+        """Log a histogram of distances for edges emanated from `all_ops`.
+
+        Args:
+          all_ops: a set of `tf.Operation` to traverse
+
+        Return:
+          A dictionary of distance and frequency.
+        """
+        hist = {}
+        all_ops = self._graph.get_operations()
+        import tempfile
+        _, f_name = tempfile.mkstemp()
+        f = open(f_name, "w")
+        f.write("#distance\tfrequency\n")
+        for op1 in all_ops:
+            for op2 in ut.fanouts(op1):
+                dist = self._get_order(op2) - self._get_order(op1)
+                if dist in hist:
+                    hist[dist] += 1
+                else:
+                    hist[dist] = 1
+        
+        for v in sorted(hist):
+            f.write("{}\t{}\n".format(v, hist[v]))
+        f.close()
+        self._log_info(
+            "A histogram of distances was written to {}".format(f_name))
+        return hist
