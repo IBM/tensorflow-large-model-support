@@ -654,12 +654,12 @@ class LMS(object):
                     swapin_op.name), 1, 2)
             self._sync_swapin(dest_op)
 
-    def _do_direct_order(self, fw_op, src_op, distance):
+    def _do_direct_order(self, src_op, dest_op, distance):
         """Find a control dependency operation using topological sort.
 
         Args:
-          fw_op: a `tf.Operation` that has a tensor swapped out.
-          bw_op: a `tf.Operation` that consumes a tensor swapped in.
+          src_op: a `tf.Operation` that has a tensor swapped out.
+          dest_op: a `tf.Operation` that consumes a tensor swapped in.
           distance: an `integer`. The distance in the topological order
             between `bw_op` and a candidate for control dependency ops
             must be greater than `distance`.
@@ -673,8 +673,8 @@ class LMS(object):
         result_ops = set()
 
         # offset ordering
-        fw_order = self._get_order(fw_op)
-        src_order = self._get_order(src_op)
+        fw_order = self._get_order(src_op)
+        src_order = self._get_order(dest_op)
 
         range_ub = src_order - distance
         range_lb = fw_order + 1
@@ -685,7 +685,7 @@ class LMS(object):
             # on the chain rule path
             candidates = {op
                           for op in candidates
-                          if self._is_reachable(op, src_op)}
+                          if self._is_reachable(op, dest_op)}
             candidates = {op
                           for op in candidates
                           if "/cond/" not in op.name}
