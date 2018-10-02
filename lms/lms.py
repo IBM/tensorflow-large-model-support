@@ -682,13 +682,18 @@ class LMS(object):
         ctrld_order = -1
         for i in reversed(range(range_lb, range_ub)):
             candidates = self._get_ops_by_order(i)
-            # on the chain rule path
-            candidates = {op
-                          for op in candidates
-                          if self._is_reachable(op, dest_op)}
-            candidates = {op
-                          for op in candidates
-                          if "/cond/" not in op.name}
+            # on the longest path from `src_op` to `dest_op`
+            candidates = {
+                op
+                for op in candidates
+                if self._is_on_longest_path(src_op, dest_op, op)
+            }
+            # not in a condition scope
+            candidates = {
+                op
+                for op in candidates
+                if "/cond/" not in op.name
+            }
             if candidates:
                 result_ops |= candidates
                 ctrld_order = i
@@ -699,6 +704,16 @@ class LMS(object):
             return (ctrld_op, ctrld_order)
         else:
             return (None, -1)
+
+    
+    def _is_on_longest_path(self, src_op, dest_op, op):
+        """Check if `op` is on the longest path from `src_op` to `dest_op`.
+        """
+        if not self._is_reachable(src_op, op):
+            return False
+        if not self._is_reachable(op, dest_op):
+            return False
+        return True
 
     def _filter_scopes_and_types(self, within_ops, scopes, types):
         """Filter out ops that are not in `scopes` and not of `types`.
@@ -720,7 +735,10 @@ class LMS(object):
         return ops
 
     def _is_reachable(self, src_op, dest_op):
-        """Check whether there exists a path from src_op to dest_op
+        """Check whether there exists a path from src_op to dest_op.
+        The path's length must be equal to the distance from
+        `src_op` to `dest_ops`.
+
         Args:
           src_op: a starting operation.
           dest_op: a destination operation.
@@ -729,28 +747,21 @@ class LMS(object):
           True/False.
         """
         ret = False
+        src_ord = self._get_order(src_op)
         dest_ord = self._get_order(dest_op)
 
-        open_set = Queue.Queue()
-        open_set.put(src_op)
+        fanouts = ut.fanouts(src_op)
+        for l in range(src_ord+1, dest_ord):
+            latest_ops = self._get_ops_by_order(l)
+            latest_ops &= fanouts
+            fanouts = set()
+            for op in latest_ops:
+                fanouts |= ut.fanouts(op)
 
-        closed_set = set()
-        while not open_set.empty():
-            src_op = open_set.get()
-            next_ops = ut.fanouts(src_op)
-            next_ops |= self._get_control_outputs(src_op)
-            
-            next_ops = {op for op in next_ops
-                        if self._get_order(op) <= dest_ord}
-            if dest_op in next_ops:
-                return True
-            else:
-                for nop in next_ops:
-                    if nop in closed_set:
-                        continue
-                    else:
-                        open_set.put(nop)
-        return ret
+        if dest_op in fanouts:
+            return True
+        else:
+            return False
 
     def _get_order(self, op):
         """Return the topological order of an operation.
