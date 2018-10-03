@@ -231,8 +231,8 @@ class LMS(object):
 
         self._print_configuration()
         self._log_histogram()  # build a histogram of distance
-        self._do_action(all_ops)  # add swapout/swapin ops
 
+        self._rewrite_for_swapping(all_ops)  # add swapout/swapin ops
         if self._sync_mode == 0:  # async mode
             self._add_control_dependencies()  # add ctrl. dependencies
         else:
@@ -285,16 +285,16 @@ class LMS(object):
 
         return init_ops
 
-    def _do_action(self, src_ops):
-        """Add swapin and swapout ops for ops that are reachable from `src_ops`.
+    def _rewrite_for_swapping(self, all_ops):
+        """Add swapin and swapout ops for ops that are reachable from `all_ops`.
 
         Args:
-          src_ops: a list of `tf.Operation`
+          all_ops: a list of `tf.Operation`
         """
         open_set = Queue.Queue()
         closed_set = set()
 
-        for op in src_ops:
+        for op in all_ops:
             open_set.put(op)
 
         while not open_set.empty():
