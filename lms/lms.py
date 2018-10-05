@@ -143,12 +143,8 @@ class LMS(object):
         # a topological ordering
         self._topo_sort = None
 
-        # keep the numbers of swap-out/swap-in ops
-        self._swapout_ops = set()
-        self._swapin_ops = set()
-
         # store information to be used to adding control dependencies
-        self._ops_triples = []  # [(src_op, dest_op, swapin_op)]
+        self._swap_ops = []  # [(src_op, swapout_op, swapin_op, dest_op)]
 
         # control outputs topology
         self._control_outputs = None
@@ -235,11 +231,14 @@ class LMS(object):
         else:
             self._sync_ops(self._sync_mode)
 
+        # print log information
+        n_swapout_ops = len({op[1] for op in self._swap_ops})
+        n_swapin_ops = len({op[2] for op in self._swap_ops})
         self._log_info(
             "Added {} operations to the model".format(
-                len(self._swapout_ops) + len(self._swapin_ops)) +
+                n_swapout_ops + n_swapin_ops) +
             " ({} swap-out operations and {} swap-in operations)".format(
-                len(self._swapout_ops), len(self._swapin_ops)))
+                n_swapout_ops, n_swapin_ops))
         self._log_info("Editing model for LMS, took: {} ms".format(
             (time.time()-start_time)*1000))
 
@@ -310,15 +309,16 @@ class LMS(object):
     def _sync_ops(self, sync_mode):
         """TODO: write comment
         """
+        src, _, sin, dest = 0, 1, 2, 3
         # sync for swap-out ops
         if sync_mode in {1, 3}:
-            src_ops = {op[0] for op in self._ops_triples}
+            src_ops = {op[src] for op in self._swap_ops}
             for x in src_ops:
                 self._sync_swapout(x)
 
         # sync for swap-in ops
         if sync_mode in {2, 3}:
-            dest_sin = {(op[1], op[2]) for op in self._ops_triples}
+            dest_sin = {(op[dest], op[sin]) for op in self._swap_ops}
             for x, sin in dest_sin:
                 self._sync_swapin(x, sin)
 
@@ -328,7 +328,7 @@ class LMS(object):
         this method
         """
         def _souts(op):
-            return ut.fanouts(op) & self._swapout_ops
+            return ut.fanouts(op) & {op[1] for op in self._swap_ops}
 
         x_souts = _souts(x)
         fs = ut.fanouts(x) | self._get_control_outputs(x)
@@ -428,14 +428,12 @@ class LMS(object):
             dests_grp = self._groupby(ts_dests[ts], self._swapin_groupby)
 
             # insert swapout and swap-in ops
-            sout, dest_sin = self._insert_swap_nodes_for_ts(
+            sout, sin_dest = self._insert_swap_nodes_for_ts(
                 src_op, ts, dests_grp)
 
             # keep newly added ops
-            self._swapout_ops.add(sout)
-            for dest, sin in dest_sin:
-                self._swapin_ops.add(sin)
-                self._ops_triples.append((src_op, dest, sin))
+            for sin, dest in sin_dest:
+                self._swap_ops.append((src_op, sout, sin, dest))
 
     def _insert_swap_nodes_for_ts(self, src_op, ts, targets):
         """Insert swapin and swapout ops for the given tensor into the graph.
@@ -456,7 +454,7 @@ class LMS(object):
         self._add_control_inputs(swapout_op, src_op, offset=4)
 
         # create swap_in nodes
-        dest_sin = set()
+        sin_dest = set()
         for dest_ops in targets:
             # swap_in op
             swapin_op = self._add_swapin(swapout_op, dest_ops, ts)
@@ -464,9 +462,9 @@ class LMS(object):
             ops_ords = [(op, self._get_order(op)) for op in dest_ops]
             x = sorted([i[1] for i in ops_ords])[0]  # the earliest op
             dest_op = [op[0] for op in ops_ords if op[1] == x][0]
-            dest_sin.add((dest_op, swapin_op))
+            sin_dest.add((swapin_op, dest_op))
 
-        return (swapout_op, dest_sin)
+        return (swapout_op, sin_dest)
 
     def _add_swapout(self, src_op, ts0):
         """Add a swapout operation to the graph to swap out the output tensor `ts0`
@@ -565,25 +563,27 @@ class LMS(object):
             self._sequential_strategy()
         else:
             # Use the user-defined ahead
-            for op in self._ops_triples:
+            for src, _, sin, dest in self._swap_ops:
                 self._add_control_dependency(
-                    op[0], op[1], op[2], self._swapin_ahead)
+                    src, dest, sin, self._swapin_ahead)
 
     def _sequential_strategy(self):
         """This strategy is to make sure swapins are done in
         a sequential way with respect to the topological order of
         consuming ops.
         """
-        x = sorted(self._ops_triples,
-                   key=lambda ops: self._get_order(ops[1]))
+        src, sout, sin, dest = 0, 1, 2, 3  # indices
+        # sort by destination op's level
+        x = sorted(self._swap_ops,
+                   key=lambda ops: self._get_order(ops[dest]))
 
         # a fixed setting for the first swapins.
-        x0_dest_order = self._get_order(x[0][1])
+        x0_dest_order = self._get_order(x[0][dest])
         ahead = 3
         k = 0
         for i in range(0, len(x)):
-            if self._get_order(x[i][1]) == x0_dest_order:
-                self._add_control_dependency(x[i][0], x[i][1], x[i][2], ahead)
+            if self._get_order(x[i][dest]) == x0_dest_order:
+                self._add_control_dependency(x[i][src], x[i][dest], x[i][sin], ahead)
                 k = i
             else:
                 break
@@ -591,12 +591,12 @@ class LMS(object):
         lb = x0_dest_order
         last_order = lb
         for i in range(k+1, len(x)):
-            curr_order = self._get_order(x[i][1])
+            curr_order = self._get_order(x[i][dest])
             if curr_order != last_order:
                 lb = last_order
                 last_order = curr_order
             ahead = curr_order - lb
-            self._add_control_dependency(x[i][0], x[i][1], x[i][2], ahead)
+            self._add_control_dependency(x[i][src], x[i][dest], x[i][sin], ahead)
 
     def _add_control_dependency(self, src_op, dest_op, swapin_op, ahead):
         """Find and add a control dependency to the graph.
