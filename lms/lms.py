@@ -312,40 +312,43 @@ class LMS(object):
         src, sout, sin, dest = 0, 1, 2, 3
         # sync for swap-out ops
         if sync_mode in {1, 3}:
+            souts = {op[sout] for op in self._swap_ops}
             src_sout = {(op[src], op[sout]) for op in self._swap_ops}
             for src, sout in src_sout:
-                self._sync_swapout(src, sout)
+                self._sync_swapout(src, sout, souts)
 
         # sync for swap-in ops
         if sync_mode in {2, 3}:
+            sins = {op[sin] for op in self._swap_ops}
             sin_dest = {(op[sin], op[dest]) for op in self._swap_ops}
             for sin, dest in sin_dest:
-                self._sync_swapin(sin, dest)
+                self._sync_swapin(sin, dest, sins)
 
-    def _sync_swapout(self, src, sout):
+    def _sync_swapout(self, src, sout, souts):
         """TODO: write comment
         Need to update control outputs topology before calling
         this method
         """
         fs = ut.fanouts(src) | self._get_control_outputs(src)
-        fs -= {sout}  # loop
+        fs -= souts  # self-loop and cycles among swap-outs
 
         # avoid duplication
-        fs_cins = set()
         for op in fs:
-            fs_cins |= set(op.control_inputs)
-        cins = {sout} - fs_cins
+            if sout in op.control_inputs:
+                fs.remove(op)
+            if sout in ut.fanins(op):
+                fs.remove(op)
 
         for op in fs:
-            self._add_control_inputs(op, cins)
+            self._add_control_inputs(op, sout)
 
-    def _sync_swapin(self, sin, dest):
+    def _sync_swapin(self, sin, dest, sins):
         """TODO: write comment
         """
         fs = ut.fanins(dest) | set(dest.control_inputs)
-        fs -= {sin} # loop
-        fs -= set(sin.control_inputs)  # avoid duplication
-        fs -= (ut.fanouts(sin) | self._get_control_outputs(sin))  # cycle
+        fs -= sins # self-loop and cycles among swap-ins
+        fs -= (set(sin.control_inputs) | ut.fanins(sin))  # avoid duplication
+        fs -= (ut.fanouts(sin) | self._get_control_outputs(sin))  # cycles
         self._add_control_inputs(sin, fs)
 
     def _groupby(self, ops, limit=5):
@@ -618,7 +621,8 @@ class LMS(object):
             self._log_info(
                 "Do synchronization for the swap-in {}.".format(
                     swapin_op.name), 1, 2)
-            self._sync_swapin(dest_op, swapin_op)
+            swapins = {op[2] for op in self._swap_ops}
+            self._sync_swapin(swapin_op, dest_op, swapins)
 
     def _do_direct_order(self, src_op, dest_op, distance):
         """Find a control dependency operation using topological sort.
