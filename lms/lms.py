@@ -197,6 +197,8 @@ class LMS(object):
         # inclusive ops
         self._incl_ops = self._filter_scopes_and_types(
             all_ops, self._incl_scopes, self._incl_types)
+        # get control outputs topology
+        self._control_outputs = ut.build_control_outputs(self._graph)
 
         # build a topological sort
         self._topo_sort = topos.TOPOS(all_ops)
@@ -214,6 +216,7 @@ class LMS(object):
             self._log_info("Serialize the topological sort from levels: " +
                            "{}".format(self._serialization))
             self._topo_sort.serialize_for(self._serialization, min=m)
+            self._rebuild_control_outputs(True)
 
         self._log_info("Topological sort size: {}".format(
             self._topo_sort.size))
@@ -221,9 +224,6 @@ class LMS(object):
             self._log_info("[{}]: {}".format(
                 i, [(op.name, op.type)
                     for op in self._get_ops_by_order(i)]), 1)
-
-        # get control outputs topology
-        self._control_outputs = ut.build_control_outputs(self._graph)
 
         # roughly estimate swapin_threshold in auto mode
         if self._swapout_threshold < 0:
@@ -235,6 +235,8 @@ class LMS(object):
 
         # swapping tensors
         self._rewrite_for_swapping(all_ops)  # add swapout/swapin ops
+        # make sure we are working with the latest control outputs topology
+        self._rebuild_control_outputs()
         if self._sync_mode == 0:  # async mode
             self._add_control_dependencies()  # add ctrl. dependencies
         else:
@@ -334,17 +336,15 @@ class LMS(object):
         """
         # sync for swap-out ops
         if sync_mode in {1, 3}:
-            # make sure we are working with the latest control outputs topology
-            self._rebuild_control_outputs()
             src_ops = {op[0] for op in self._ops_triples}
             for x in src_ops:
                 self._sync_swapout(x)
 
         # sync for swap-in ops
         if sync_mode in {2, 3}:
-            dest_ops = {op[1] for op in self._ops_triples}
-            for x in dest_ops:
-                self._sync_swapin(x)
+            dest_sin = {(op[1], op[2]) for op in self._ops_triples}
+            for x, sin in dest_sin:
+                self._sync_swapin(x, sin)
 
     def _sync_swapout(self, x):
         """TODO: write comment
@@ -364,24 +364,16 @@ class LMS(object):
         cins = x_souts - fs_cins
         for op in fs:
             self._add_control_inputs(op, cins)
-        self._update_control_outputs(cins, fs)
 
-    def _sync_swapin(self, x):
+    def _sync_swapin(self, x, sin):
         """TODO: write comment
         """
-        def _sins(op):
-            return ut.fanins(op) & self._swapin_ops
-
-        x_sins = _sins(x)
-        x_sins_outs = set()
-        x_sins_cins = set()
-        for op in x_sins:
-            x_sins_cins |= set(op.control_inputs)
         fs = ut.fanins(x) | set(x.control_inputs)
-        fs -= (x_sins | x_sins_outs | x_sins_cins)
-        for op in x_sins:
-            self._add_control_inputs(op, fs)
-        
+        fs -= {sin} # loop
+        fs -= set(sin.control_inputs)  # avoid duplication
+        fs -= (ut.fanouts(sin) | self._get_control_outputs(sin))  # cycle
+        self._add_control_inputs(sin, fs)
+
     def _groupby(self, ops, limit=5):
         """Group `ops` into groups so that topological distance between
         two consecutive ops in a group is within `limit`.
@@ -654,7 +646,7 @@ class LMS(object):
             self._log_info(
                 "Do synchronization for the swap-in {}.".format(
                     swapin_op.name), 1, 2)
-            self._sync_swapin(dest_op)
+            self._sync_swapin(dest_op, swapin_op)
 
     def _do_direct_order(self, src_op, dest_op, distance):
         """Find a control dependency operation using topological sort.
@@ -754,6 +746,7 @@ class LMS(object):
         for l in range(src_ord+1, dest_ord):
             latest_ops = self._get_ops_by_order(l)
             latest_ops &= fanouts
+
             fanouts = set()
             for op in latest_ops:
                 fanouts |= ut.fanouts(op)
@@ -835,11 +828,11 @@ class LMS(object):
         else:
             return set()
 
-    def _rebuild_control_outputs(self):
+    def _rebuild_control_outputs(self, force=False):
         """Rebuild the control_outputs dictionary if there are ops added
         to the graph.
         """
-        if self._version != self._graph.version:
+        if force or (self._version != self._graph.version):
             self._control_outputs = ut.build_control_outputs(self._graph)
 
     def _update_control_outputs(self, ops, couts):
@@ -861,6 +854,7 @@ class LMS(object):
           TypeError: if op is not a tf.Operation
           ValueError: if any cop in cops is already a control input of op.
         """
+
         ut.add_control_inputs(op, cops)
         flag = True
         try:
@@ -869,10 +863,12 @@ class LMS(object):
             flag = False
 
         if not flag:
+            self._update_control_outputs({cops}, {op})
             self._log_info(
                 "Control dependency: {} => {}".format(
                     cops.name, op.name), 1, offset)
         else:
+            self._update_control_outputs(cops, {op})
             for cop in cops:
                 self._log_info(
                     "Control dependency: {} => {}".format(
