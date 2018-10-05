@@ -103,6 +103,10 @@ class LMS(object):
         self._sync_mode = sync_mode
         self._serialize_from = serialize_from
 
+        self._cpu_device = cpu_device
+        self._debug = debug
+        self._debug_level = debug_level
+
         # https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/framework/graph_util_impl.py
         self._variable_ops = {
             "Assign",
@@ -138,9 +142,6 @@ class LMS(object):
         self._excl_ops = set()
         self._incl_ops = set()
         self._topo_sort = None
-        self._cpu_device = cpu_device
-        self._debug = debug
-        self._debug_level = debug_level
 
         # keep the numbers of swap-out/swap-in ops
         self._swapout_ops = set()
@@ -232,6 +233,7 @@ class LMS(object):
         self._print_configuration()
         self._log_histogram()  # build a histogram of distance
 
+        # swapping tensors
         self._rewrite_for_swapping(all_ops)  # add swapout/swapin ops
         if self._sync_mode == 0:  # async mode
             self._add_control_dependencies()  # add ctrl. dependencies
@@ -705,7 +707,6 @@ class LMS(object):
         else:
             return (None, -1)
 
-    
     def _is_on_longest_path(self, src_op, dest_op, op):
         """Check if `op` is on the longest path from `src_op` to `dest_op`.
         """
@@ -746,7 +747,6 @@ class LMS(object):
         Return:
           True/False.
         """
-        ret = False
         src_ord = self._get_order(src_op)
         dest_ord = self._get_order(dest_op)
 
