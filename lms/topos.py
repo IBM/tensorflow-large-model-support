@@ -100,9 +100,13 @@ class TOPOS(object):
         xs = set()
         ys = [i for i in range(0, self.size)]
         for s in levels:
-            sl = slice(*map(lambda x: int(x.strip())
-                            if x.strip()
-                            else None, s.split(':')))
+            if ":" in s:
+                sl = slice(*map(lambda x: int(x.strip())
+                                if x.strip()
+                                else None, s.split(':')))
+            else:
+                idx = int(s)
+                sl = slice(idx, idx+1, None)
             xs |= set(ys[sl])
         indices = sorted(list(xs))
         indices = [i for i in indices if i > min]
