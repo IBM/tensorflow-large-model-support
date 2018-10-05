@@ -140,8 +140,7 @@ class LMS(object):
             'Fill', 'Range', 'RandomUniform'}
         self._excl_types |= self._unused_types | self._variable_ops
 
-        self._excl_ops = set()
-        self._incl_ops = set()
+        # a topological ordering
         self._topo_sort = None
 
         # keep the numbers of swap-out/swap-in ops
@@ -191,13 +190,7 @@ class LMS(object):
                 len(all_ops), n_edges)
         )
 
-        # exclusive ops
-        self._excl_ops = self._filter_scopes_and_types(
-            all_ops, self._excl_scopes, self._excl_types)
-        # inclusive ops
-        self._incl_ops = self._filter_scopes_and_types(
-            all_ops, self._incl_scopes, self._incl_types)
-        # get control outputs topology
+        # build a control output topology
         self._control_outputs = ut.build_control_outputs(self._graph)
 
         # build a topological sort
@@ -234,7 +227,7 @@ class LMS(object):
         self._log_histogram()  # build a histogram of distance
 
         # swapping tensors
-        self._rewrite_for_swapping(all_ops)  # add swapout/swapin ops
+        self._rewrite_for_swapping()  # add swapout/swapin ops
         # make sure we are working with the latest control outputs topology
         self._rebuild_control_outputs()
         if self._sync_mode == 0:  # async mode
@@ -289,47 +282,30 @@ class LMS(object):
 
         return init_ops
 
-    def _rewrite_for_swapping(self, all_ops):
+    def _rewrite_for_swapping(self):
         """Add swapin and swapout ops for ops that are reachable from `all_ops`.
 
         Args:
           all_ops: a list of `tf.Operation`
         """
-        open_set = Queue.Queue()
-        closed_set = set()
+        all_ops = set(self._graph.get_operations())
 
-        for op in all_ops:
-            open_set.put(op)
+        # exclusive ops
+        _excl_ops = self._filter_scopes_and_types(
+            all_ops, self._excl_scopes, self._excl_types)
+        # inclusive ops
+        _incl_ops = self._filter_scopes_and_types(
+            all_ops, self._incl_scopes, self._incl_types)
 
-        while not open_set.empty():
-            src_op = open_set.get()
+        if _incl_ops:
+            # if inclusive mode is enabled,
+            # only proceed included ops
+            cand_ops = _incl_ops
+        else:
+            cand_ops = all_ops - _excl_ops
 
-            # get next ops before the graph is changed
-            next_ops = ut.fanouts(src_op)
-
-            # do action for src_op
-            # bypass excluded ops
-            if src_op in self._excl_ops:
-                pass
-            elif self._get_order(src_op) < 0:
-                pass
-            elif self._incl_ops:
-                # if inclusive mode is enabled,
-                # only proceed included ops
-                if src_op in self._incl_ops:
-                    self._insert_swap_nodes(src_op)
-                else:
-                    pass
-            else:
-                self._insert_swap_nodes(src_op)
-
-            for op in next_ops:
-                if op in closed_set:
-                    continue
-                if op not in open_set.queue:
-                    open_set.put(op)
-
-            closed_set.add(src_op)
+        for op in cand_ops:
+            self._insert_swap_nodes(op)
 
     def _sync_ops(self, sync_mode):
         """TODO: write comment
@@ -457,10 +433,8 @@ class LMS(object):
 
             # keep newly added ops
             self._swapout_ops.add(sout)
-            self._excl_ops.add(sout)  # exclusive this op
             for dest, sin in dest_sin:
                 self._swapin_ops.add(sin)
-                self._excl_ops.add(sin)  # exclusive this op
                 self._ops_triples.append((src_op, dest, sin))
 
     def _insert_swap_nodes_for_ts(self, src_op, ts, targets):
