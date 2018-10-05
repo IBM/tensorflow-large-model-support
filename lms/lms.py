@@ -309,42 +309,40 @@ class LMS(object):
     def _sync_ops(self, sync_mode):
         """TODO: write comment
         """
-        src, _, sin, dest = 0, 1, 2, 3
+        src, sout, sin, dest = 0, 1, 2, 3
         # sync for swap-out ops
         if sync_mode in {1, 3}:
-            src_ops = {op[src] for op in self._swap_ops}
-            for x in src_ops:
-                self._sync_swapout(x)
+            src_sout = {(op[src], op[sout]) for op in self._swap_ops}
+            for src, sout in src_sout:
+                self._sync_swapout(src, sout)
 
         # sync for swap-in ops
         if sync_mode in {2, 3}:
-            dest_sin = {(op[dest], op[sin]) for op in self._swap_ops}
-            for x, sin in dest_sin:
-                self._sync_swapin(x, sin)
+            sin_dest = {(op[sin], op[dest]) for op in self._swap_ops}
+            for sin, dest in sin_dest:
+                self._sync_swapin(sin, dest)
 
-    def _sync_swapout(self, x):
+    def _sync_swapout(self, src, sout):
         """TODO: write comment
         Need to update control outputs topology before calling
         this method
         """
-        def _souts(op):
-            return ut.fanouts(op) & {op[1] for op in self._swap_ops}
+        fs = ut.fanouts(src) | self._get_control_outputs(src)
+        fs -= {sout}  # loop
 
-        x_souts = _souts(x)
-        fs = ut.fanouts(x) | self._get_control_outputs(x)
-        fs -= x_souts
+        # avoid duplication
         fs_cins = set()
         for op in fs:
             fs_cins |= set(op.control_inputs)
+        cins = {sout} - fs_cins
 
-        cins = x_souts - fs_cins
         for op in fs:
             self._add_control_inputs(op, cins)
 
-    def _sync_swapin(self, x, sin):
+    def _sync_swapin(self, sin, dest):
         """TODO: write comment
         """
-        fs = ut.fanins(x) | set(x.control_inputs)
+        fs = ut.fanins(dest) | set(dest.control_inputs)
         fs -= {sin} # loop
         fs -= set(sin.control_inputs)  # avoid duplication
         fs -= (ut.fanouts(sin) | self._get_control_outputs(sin))  # cycle
