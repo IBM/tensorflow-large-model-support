@@ -789,7 +789,7 @@ class LMS(object):
         """
         return self._topo_sort.get_ops(order)
 
-    def _log_info(self, message, level=0, offset=1):
+    def _log_info(self, message, level=0, offset=0):
         """Log debug information.
 
         Args:
@@ -799,7 +799,7 @@ class LMS(object):
         if level == 0 or (self._debug and self._debug_level >= level):
             # Use tf_logging.info instead of print, since print
             # is not thread safe, which can break tests.
-            tf_logging.info("[LMS][{}]".format(level) +
+            tf_logging.info("[LMS][{}] ".format(level) +
                             ' '*offset +
                             "{}".format(message))
 
