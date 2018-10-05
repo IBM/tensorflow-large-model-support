@@ -50,7 +50,7 @@ class LMS(object):
                  swapin_groupby=0,
                  swapin_ahead=-1,
                  sync_mode=0,
-                 serialize_from=-1,
+                 serialization=[],
                  debug=False,
                  debug_level=1,
                  cpu_device="/cpu:0"):
@@ -81,10 +81,11 @@ class LMS(object):
             kernel computation or not. Four modes: `0` turn off. `1` sync for
             only swap-out ops. `2` sync for only swap-in ops. `3` sync for both
             swap-out and swap-in ops. Default `0`.
-          serialize_from: serialize operations at the same level in the
-            topological sort. Levels starting from `serialize_from`
-            to the end of the topological sort are serialized.
-            Default `-1` (turn off).
+          serialization: serialize operations at the same level in the
+            topological sort. This option accepts a list of Python slicing
+            string in which each slicing represents level indices in the
+            topological sort. E.g. [1, 3:5, 7] means levels 1, 3, 4, 5 and 7
+            are serialized. Default `[]` (turn off).
           debug: debug mode for LMS. Default `False`.
           debug_level: debug level for LMS (1 or 2). Default `1`.
           cpu_device: the device we would like swap tensors to.
@@ -101,7 +102,7 @@ class LMS(object):
         if sync_mode not in {0, 1, 2, 3}:
             raise ValueError('Invalid value for sync_mode')
         self._sync_mode = sync_mode
-        self._serialize_from = serialize_from
+        self._serialization = serialization
 
         self._cpu_device = cpu_device
         self._debug = debug
@@ -200,20 +201,19 @@ class LMS(object):
         # build a topological sort
         self._topo_sort = topos.TOPOS(all_ops)
         self._topo_sort.build()
-        if self._serialize_from >= 0:
+        if self._serialization:
             init_ops = self._force_variable_initialization(
                 {op for op in all_ops
                  if op.type in {'Variable', 'VariableV2'}})
+            m = 0
             if len(init_ops) > 0:
                 # when are all variables initialized?
                 self._topo_sort.reset()
                 self._topo_sort.build()
                 m = max({self._get_order(op) for op in init_ops})
-                self._serialize_from = max(m+1, self._serialize_from)
-            self._log_info("Serialize the topological sort from " +
-                           "level {} to level {} (last level)".format(
-                               self._serialize_from, self._topo_sort.size))
-            self._topo_sort.serialize_from(self._serialize_from)
+            self._log_info("Serialize the topological sort from levels: " +
+                           "{}".format(self._serialization))
+            self._topo_sort.serialize_for(self._serialization, min=m)
 
         self._log_info("Topological sort size: {}".format(
             self._topo_sort.size))

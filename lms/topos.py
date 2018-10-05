@@ -89,49 +89,74 @@ class TOPOS(object):
         self._topo_sort = {}
         self._orders = {}
 
-    def serialize_from(self, from_order):
-        """Serialize ops at the same level in the topological sort
+    def serialize_for(self, levels, min=1):
+        """Serialize ops for multiple levels in the topological sort
+        
+        Args:
+          levels: a list of strings of Python slicings
         """
-        d = self.size
-        s = min(from_order, d)
 
-        # serialize ops at the same level
-        prev_k_ops = set()
-        for i in range(s, d):
-            xs = self.get_ops(i)
-            if xs is None:
-                continue
-                
-            # do not serialize levels including ops in the "/cond/" scope.
-            cond_ops = {op for op in xs if "/cond/" in op.name}
-            if len(cond_ops) > 0:
-                prev_k_ops = set()
-                continue
-            else:
-                pass
+        # build a list of indices
+        xs = set()
+        ys = [i for i in range(0, self.size)]
+        for s in levels:
+            sl = slice(*map(lambda x: int(x.strip())
+                            if x.strip()
+                            else None, s.split(':')))
+            xs |= set(ys[sl])
+        indices = sorted(list(xs))
+        indices = [i for i in indices if i > min]
 
-            head_ops = {next(iter(xs))}
-            tail_ops = xs - head_ops
-
-            k_ops = head_ops
-            if len(prev_k_ops) > 0:
-                for op in k_ops:
-                    ut.add_control_inputs(
-                        op,
-                        prev_k_ops - set(op.control_inputs))
-
-            for op in tail_ops:
-                ut.add_control_inputs(
-                    op,
-                    k_ops - set(op.control_inputs))
-                k_ops = {op}
-
-            prev_k_ops = k_ops
+        prev_ops = set()
+        prev_level = -1
+        for i in indices:
+            if (not prev_ops) and (prev_level + 1 == i):
+                prev_ops = set()
+            prev_ops = self._serialize_at(i, prev_ops)
+            prev_level = i
 
         # rebuild the topo sort
         self.reset()
         self.build()
-        return s
+
+    def _serialize_at(self, order, prev_ops, rebuild=False):
+        """Serialize ops at the same level in the topological sort
+        """
+        xs = self.get_ops(order)
+        if xs is None:
+            return set()
+                
+        # do not serialize levels including ops in the "/cond/" scope.
+        cond_ops = {op for op in xs if "/cond/" in op.name}
+        if len(cond_ops) > 0:
+            return set()
+        else:
+            pass
+
+        head_ops = {next(iter(xs))}
+        tail_ops = xs - head_ops
+
+        k_ops = head_ops
+        if prev_ops:
+            for op in k_ops:
+                ut.add_control_inputs(
+                    op,
+                    prev_ops - set(op.control_inputs))
+
+        for op in tail_ops:
+            ut.add_control_inputs(
+                op,
+                k_ops - set(op.control_inputs))
+            k_ops = {op}
+
+        # rebuild the topo sort
+        if rebuild:
+            self.reset()
+            self.build()
+        else:
+            pass
+
+        return k_ops
 
     def get_order(self, op):
         """Return the order of an operation.
