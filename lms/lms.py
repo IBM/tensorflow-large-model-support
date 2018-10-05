@@ -329,6 +329,9 @@ class LMS(object):
         Need to update control outputs topology before calling
         this method
         """
+        self._log_info("Do synchronization for the swap-out " +
+                       "{}.".format(sout.name), 1)
+
         fs = ut.fanouts(src) | self._get_control_outputs(src)
         fs -= souts  # self-loop and cycles among swap-outs
 
@@ -345,6 +348,9 @@ class LMS(object):
     def _sync_swapin(self, sin, dest, sins):
         """TODO: write comment
         """
+        self._log_info("Do synchronization for the swap-in " + 
+                       "{}.".format(sin.name), 1)
+
         fs = ut.fanins(dest) | set(dest.control_inputs)
         fs -= sins # self-loop and cycles among swap-ins
         fs -= (set(sin.control_inputs) | ut.fanins(sin))  # avoid duplication
@@ -616,11 +622,9 @@ class LMS(object):
             self._add_control_inputs(swapin_op, ctrld_op)
         else:
             self._log_info(
-                "No control dependency op found for the swap-in {}.".format(
-                    swapin_op.name), 1)
-            self._log_info(
-                "Do synchronization for the swap-in {}.".format(
-                    swapin_op.name), 1, 2)
+                "No control dependency op found for the swap-in " +
+                "{}.".format(swapin_op.name), 1)
+            # do synchronization
             swapins = {op[2] for op in self._swap_ops}
             self._sync_swapin(swapin_op, dest_op, swapins)
 
