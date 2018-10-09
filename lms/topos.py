@@ -15,8 +15,6 @@
 
 """TOPOS
 """
-import toposort
-
 from lms import util as ut
 
 
@@ -34,14 +32,24 @@ class TOPOS(object):
         self._levels = {}
 
     def build(self):
-        """Build a topological sort
+        """Build a categorized topological sort
         """
         dep_dict = {}
         for op in self._graph.get_operations():
             dep_dict[op] = ut.fanins(op) | set(op.control_inputs)
 
         # build a categorized topological sort
-        self._topo_sort = list(toposort.toposort(dep_dict))
+        while True:
+            current_level_ops = set(item for item, dep in dep_dict.items()
+                                    if len(dep) == 0)
+            if not current_level_ops:
+                break
+            else:
+                self._topo_sort.append(current_level_ops)
+                dep_dict = {item: (dep - current_level_ops)
+                            for item, dep in dep_dict.items()
+                            if item not in current_level_ops}
+
         # build a dict of (op, level)
         for i in range(0, len(self._topo_sort)):
             for op in self._topo_sort[i]:
