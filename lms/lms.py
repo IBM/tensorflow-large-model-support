@@ -195,6 +195,7 @@ class LMS(object):
         self._log_info("Original categorized topological sort has {} levels".format(
             self._topo_sort.size))
 
+        # serialize the topological sort if enabled
         if self._serialization:
             init_ops = self._force_variable_initialization(
                 {op for op in all_ops
@@ -205,17 +206,18 @@ class LMS(object):
                 self._topo_sort.reset()
                 self._topo_sort.build()
                 m = max({self._get_order(op) for op in init_ops})
-            self._log_info("Serialize the topological sort from levels: " +
+            self._log_info("Serialize the topological sort for levels: " +
                            "{}".format(self._serialization), offset=2)
             self._topo_sort.serialize_for(self._serialization, min=m)
             self._log_info("New categorized topological sort has {} levels".format(
                 self._topo_sort.size), offset=2)
-            self._rebuild_control_outputs(True)
+            self._rebuild_control_outputs(True)  # force rebuilding
 
-        for i in range(0, self._topo_sort.size):
-            self._log_info("[{}]: {}".format(
-                i, [(op.name, op.type)
-                    for op in self._get_ops_by_order(i)]), 1)
+        if self._debug and self._debug_level >= 1:
+            for i in range(0, self._topo_sort.size):
+                self._log_info("[{}]: {}".format(
+                    i, [(op.name, op.type)
+                        for op in self._get_ops_by_order(i)]), 1)
 
         # roughly estimate swapin_threshold in auto mode
         if self._swapout_threshold < 0:
@@ -229,9 +231,10 @@ class LMS(object):
         self._rewrite_for_swapping()  # add swapout/swapin ops
         # make sure we are working with the latest control outputs topology
         self._rebuild_control_outputs()
+        # add ctrl. dependencies
         if self._sync_mode == 0:  # async mode
-            self._add_control_dependencies()  # add ctrl. dependencies
-        else:
+            self._add_control_dependencies()
+        else:  # sync mode
             self._sync_ops(self._sync_mode)
 
         # print log information
