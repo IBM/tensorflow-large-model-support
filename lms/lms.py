@@ -192,6 +192,9 @@ class LMS(object):
         # build a topological sort
         self._topo_sort = topos.TOPOS(all_ops)
         self._topo_sort.build()
+        self._log_info("Original categorized topological sort has {} levels".format(
+            self._topo_sort.size))
+
         if self._serialization:
             init_ops = self._force_variable_initialization(
                 {op for op in all_ops
@@ -203,12 +206,12 @@ class LMS(object):
                 self._topo_sort.build()
                 m = max({self._get_order(op) for op in init_ops})
             self._log_info("Serialize the topological sort from levels: " +
-                           "{}".format(self._serialization))
+                           "{}".format(self._serialization), offset=2)
             self._topo_sort.serialize_for(self._serialization, min=m)
+            self._log_info("New categorized topological has {} levels".format(
+                self._topo_sort.size), offset=2)
             self._rebuild_control_outputs(True)
 
-        self._log_info("Topological sort size: {}".format(
-            self._topo_sort.size))
         for i in range(0, self._topo_sort.size):
             self._log_info("[{}]: {}".format(
                 i, [(op.name, op.type)
