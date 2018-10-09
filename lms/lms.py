@@ -208,7 +208,7 @@ class LMS(object):
             self._log_info("Serialize the topological sort from levels: " +
                            "{}".format(self._serialization), offset=2)
             self._topo_sort.serialize_for(self._serialization, min=m)
-            self._log_info("New categorized topological has {} levels".format(
+            self._log_info("New categorized topological sort has {} levels".format(
                 self._topo_sort.size), offset=2)
             self._rebuild_control_outputs(True)
 
