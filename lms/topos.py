@@ -40,8 +40,8 @@ class TOPOS(object):
 
         # build a categorized topological sort
         while True:
-            current_level_ops = set(item for item, dep in dep_dict.items()
-                                    if len(dep) == 0)
+            current_level_ops = {item for item, dep in dep_dict.items()
+                                 if len(dep) == 0}
             if not current_level_ops:
                 break
             else:

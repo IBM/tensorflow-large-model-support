@@ -9,7 +9,7 @@ def fanins(op):
       op: a `tf.Operation`.
 
     Return:
-      A list of `tf.Operation`.
+      A set of `tf.Operation`.
     """
     return {t.op for t in op.inputs}
 
