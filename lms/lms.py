@@ -19,7 +19,6 @@ from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 
 import time
-from six.moves import queue as Queue
 from lms import topos
 from lms import util as ut
 
@@ -140,7 +139,7 @@ class LMS(object):
             'Fill', 'Range', 'RandomUniform'}
         self._excl_types |= self._unused_types | self._variable_ops
 
-        # a topological ordering
+        # a topological sort
         self._topo_sort = None
 
         # store information to be used to adding control dependencies
@@ -190,7 +189,7 @@ class LMS(object):
         self._control_outputs = ut.build_control_outputs(self._graph)
 
         # build a topological sort
-        self._topo_sort = topos.TOPOS(all_ops)
+        self._topo_sort = topos.TOPOS(self._graph)
         self._topo_sort.build()
         self._log_info("Original categorized topological sort has {} levels".format(
             self._topo_sort.size))
@@ -205,7 +204,7 @@ class LMS(object):
                 # when are all variables initialized?
                 self._topo_sort.reset()
                 self._topo_sort.build()
-                m = max({self._get_order(op) for op in init_ops})
+                m = max({self._get_level(op) for op in init_ops})
             self._log_info("Serialize the topological sort for levels: " +
                            "{}".format(self._serialization), offset=2)
             self._topo_sort.serialize_for(self._serialization, min=m)
@@ -217,7 +216,7 @@ class LMS(object):
             for i in range(0, self._topo_sort.size):
                 self._log_info("[{}]: {}".format(
                     i, [(op.name, op.type)
-                        for op in self._get_ops_by_order(i)]), 1)
+                        for op in self._get_ops_by_level(i)]), 1)
 
         # roughly estimate swapin_threshold in auto mode
         if self._swapout_threshold < 0:
@@ -267,15 +266,15 @@ class LMS(object):
             assign_ops = {op for op in outs if op.type == "Assign"}
 
             # initialization op is the first Assign op
-            m = min({self._get_order(op) for op in assign_ops})
+            m = min({self._get_level(op) for op in assign_ops})
             first_assign_ops = {
                 op for op in assign_ops
-                if self._get_order(op) == m
+                if self._get_level(op) == m
             }
             if len(first_assign_ops) != 1:
                 self._log_info("Variable: {}".format(x.name))
                 self._log_info("Fanout ops: {}".format(
-                    {(op.name, op.type, self._get_order(op))
+                    {(op.name, op.type, self._get_level(op))
                      for op in outs}))
                 raise ValueError(
                     'Could not find the first assignment for {}'.format(x.name))
@@ -358,7 +357,7 @@ class LMS(object):
                        "{}.".format(sin.name), 1)
 
         fs = ut.fanins(dest) | set(dest.control_inputs)
-        fs -= sins # self-loop and cycles among swap-ins
+        fs -= sins  # self-loop and cycles among swap-ins
         fs -= (set(sin.control_inputs) | ut.fanins(sin))  # avoid duplication
         fs -= (ut.fanouts(sin) | self._get_control_outputs(sin))  # cycles
         self._add_control_inputs(sin, fs)
@@ -374,8 +373,8 @@ class LMS(object):
         Return:
           A list of sets of `tf.Operation`.
         """
-        ops_ords = [(op, self._get_order(op)) for op in ops]
-        x = sorted([i[1] for i in ops_ords])
+        ops_levels = [(op, self._get_level(op)) for op in ops]
+        x = sorted([i[1] for i in ops_levels])
         xs = [(i, i) for i in x]
 
         ys = [xs[0]]
@@ -392,7 +391,7 @@ class LMS(object):
         for y in ys:
             gs = set()
             gs = {op[0]
-                  for op in ops_ords
+                  for op in ops_levels
                   if (op[1] >= y[0] and op[1] <= y[1])}
             zs.append(gs)
         return zs
@@ -407,10 +406,9 @@ class LMS(object):
         """
         self._log_info("Operation: {}".format(src_op), 2)
 
-        # filter candidates
-
+        # obtain candidates
         ts_dests = {}
-        src_op_order = self._get_order(src_op)
+        src_op_level = self._get_level(src_op)
         for ts in src_op.outputs:
             # filter by tensor shape
             # do not swap 1-dimension or unknown shape tensors.
@@ -424,7 +422,7 @@ class LMS(object):
             cands = [
                 op
                 for op in ts.consumers()
-                if self._get_order(op) - src_op_order > self._swapout_threshold
+                if self._get_level(op) - src_op_level > self._swapout_threshold
             ]
             if len(cands) == 0:
                 continue
@@ -436,6 +434,7 @@ class LMS(object):
         else:
             return
 
+        # rewrite the graph
         for ts in ts_dests:
             # group near candidates by topological distance
             dests_grp = self._groupby(ts_dests[ts], self._swapin_groupby)
@@ -472,9 +471,9 @@ class LMS(object):
             # swap_in op
             swapin_op = self._add_swapin(swapout_op, dest_ops, ts)
             # for control dependency
-            ops_ords = [(op, self._get_order(op)) for op in dest_ops]
-            x = sorted([i[1] for i in ops_ords])[0]  # the earliest op
-            dest_op = [op[0] for op in ops_ords if op[1] == x][0]
+            ops_levels = [(op, self._get_level(op)) for op in dest_ops]
+            x = sorted([i[1] for i in ops_levels])[0]  # the earliest op
+            dest_op = [op[0] for op in ops_levels if op[1] == x][0]
             sin_dest.add((swapin_op, dest_op))
 
         return (swapout_op, sin_dest)
@@ -582,34 +581,36 @@ class LMS(object):
 
     def _sequential_strategy(self):
         """This strategy is to make sure swapins are done in
-        a sequential way with respect to the topological order of
+        a sequential way with respect to the topological levels of
         consuming ops.
         """
-        src, sout, sin, dest = 0, 1, 2, 3  # indices
+        src, sin, dest = 0, 2, 3  # indices
         # sort by destination op's level
         x = sorted(self._swap_ops,
-                   key=lambda ops: self._get_order(ops[dest]))
+                   key=lambda ops: self._get_level(ops[dest]))
 
         # a fixed setting for the first swapins.
-        x0_dest_order = self._get_order(x[0][dest])
+        x0_dest_level = self._get_level(x[0][dest])
         ahead = 3
         k = 0
         for i in range(0, len(x)):
-            if self._get_order(x[i][dest]) == x0_dest_order:
-                self._add_control_dependency(x[i][src], x[i][dest], x[i][sin], ahead)
+            if self._get_level(x[i][dest]) == x0_dest_level:
+                self._add_control_dependency(
+                    x[i][src], x[i][dest], x[i][sin], ahead)
                 k = i
             else:
                 break
 
-        lb = x0_dest_order
-        last_order = lb
+        lb = x0_dest_level
+        last_level = lb
         for i in range(k+1, len(x)):
-            curr_order = self._get_order(x[i][dest])
-            if curr_order != last_order:
-                lb = last_order
-                last_order = curr_order
-            ahead = curr_order - lb
-            self._add_control_dependency(x[i][src], x[i][dest], x[i][sin], ahead)
+            curr_level = self._get_level(x[i][dest])
+            if curr_level != last_level:
+                lb = last_level
+                last_level = curr_level
+            ahead = curr_level - lb
+            self._add_control_dependency(
+                x[i][src], x[i][dest], x[i][sin], ahead)
 
     def _add_control_dependency(self, src_op, dest_op, swapin_op, ahead):
         """Find and add a control dependency to the graph.
@@ -621,7 +622,7 @@ class LMS(object):
           dest_op: a `tf.Operation`.
           swapin_op: a `tf.Operation`.
         """
-        re = self._do_direct_order(src_op, dest_op, ahead)
+        re = self._search_by_level(src_op, dest_op, ahead)
 
         ctrld_op = re[0]
         if ctrld_op:
@@ -634,34 +635,30 @@ class LMS(object):
             swapins = {op[2] for op in self._swap_ops}
             self._sync_swapin(swapin_op, dest_op, swapins)
 
-    def _do_direct_order(self, src_op, dest_op, distance):
+    def _search_by_level(self, src_op, dest_op, distance):
         """Find a control dependency operation using topological sort.
 
         Args:
           src_op: a `tf.Operation` that has a tensor swapped out.
           dest_op: a `tf.Operation` that consumes a tensor swapped in.
-          distance: an `integer`. The distance in the topological order
-            between `bw_op` and a candidate for control dependency ops
+          distance: an `integer`. The distance in the topological sort
+            between `dest_op` and a candidate for control dependency ops
             must be greater than `distance`.
 
         Return:
           A tuple of (`tf.Operation`, an `integer`). The first item is
           the control dependency operation that triggers swapping in the input
-          tensor of `bw_op`. The second item is the order of the control
-          dependency operation in the topological order.
+          tensor of `dest_op`. The second item is the level of the control
+          dependency operation in the topological sort.
         """
         result_ops = set()
 
-        # offset ordering
-        fw_order = self._get_order(src_op)
-        src_order = self._get_order(dest_op)
+        range_ub = self._get_level(dest_op) - distance
+        range_lb = self._get_level(src_op) + 1
 
-        range_ub = src_order - distance
-        range_lb = fw_order + 1
-
-        ctrld_order = -1
+        ctrld_level = -1
         for i in reversed(range(range_lb, range_ub)):
-            candidates = self._get_ops_by_order(i)
+            candidates = self._get_ops_by_level(i)
             # on the longest path from `src_op` to `dest_op`
             candidates = {
                 op
@@ -676,12 +673,12 @@ class LMS(object):
             }
             if candidates:
                 result_ops |= candidates
-                ctrld_order = i
+                ctrld_level = i
                 break
 
         if result_ops:
             ctrld_op = next(iter(result_ops))
-            return (ctrld_op, ctrld_order)
+            return (ctrld_op, ctrld_level)
         else:
             return (None, -1)
 
@@ -716,7 +713,8 @@ class LMS(object):
     def _is_reachable(self, src_op, dest_op):
         """Check whether there exists a path from src_op to dest_op.
         The path's length must be equal to the distance from
-        `src_op` to `dest_ops`.
+        `src_op` to `dest_ops`. In other words, we search for the
+        longest path from `src_op` to `dest_op`.
 
         Args:
           src_op: a starting operation.
@@ -725,12 +723,12 @@ class LMS(object):
         Return:
           True/False.
         """
-        src_ord = self._get_order(src_op)
-        dest_ord = self._get_order(dest_op)
+        src_level = self._get_level(src_op)
+        dest_level = self._get_level(dest_op)
 
         fanouts = ut.fanouts(src_op)
-        for l in range(src_ord+1, dest_ord):
-            latest_ops = self._get_ops_by_order(l)
+        for l in range(src_level+1, dest_level):
+            latest_ops = self._get_ops_by_level(l)
             latest_ops &= fanouts
 
             fanouts = set()
@@ -742,8 +740,8 @@ class LMS(object):
         else:
             return False
 
-    def _get_order(self, op):
-        """Return the topological order of an operation.
+    def _get_level(self, op):
+        """Return the topological level of an operation.
 
         Args:
           op: a `tf.Operation`.
@@ -751,22 +749,22 @@ class LMS(object):
         Return:
           an integer.
         """
-        ret = self._topo_sort.get_order(op)
+        ret = self._topo_sort.get_level(op)
         if ret is None:
             return -1
         else:
             return ret
 
-    def _get_ops_by_order(self, order):
-        """Return a set of ops with the given order.
+    def _get_ops_by_level(self, level):
+        """Return a set of ops with the given level.
         
         Args:
-          order: an integer.
+          level: an integer.
 
         Return:
           a set of `tf.Operation`
         """
-        return self._topo_sort.get_ops(order)
+        return self._topo_sort.get_ops(level)
 
     def _log_info(self, message, level=0, offset=0):
         """Log debug information.
@@ -877,7 +875,7 @@ class LMS(object):
         f.write("#distance\tfrequency\n")
         for op1 in all_ops:
             for op2 in ut.fanouts(op1):
-                dist = self._get_order(op2) - self._get_order(op1)
+                dist = self._get_level(op2) - self._get_level(op1)
                 if dist in hist:
                     hist[dist] += 1
                 else:
