@@ -76,21 +76,15 @@ model.fit_generator(generator=training_gen, callbacks=[lms_callback])
 _graph_ :: the graph we will modify for LMS. This should be the graph of user-defined neural network. (not required in LMSHook and LMSKerasCallback)
 
 #### Optional parameters
-_excl_scopes_ :: a set of scopes for operations whose tensors will not be swapped out to the host. Default `empty`.
-
-_incl_scopes_ :: a set of scopes for operations whose tensors will be swapped out to the host. Default `empty`.
-
-_excl_types_ :: a set of types for operations whose tensors will not be swapped out to the host. Default `empty`.
-
-_incl_types_ :: a set of types for operations whose tensors will be swapped out to the host. Default `empty`.
-
 _swapout_threshold_: if the topological-sort distance between the consuming operation and generating operation of a tensor is greater (>) than `swapout_threshold`, then trigger swapping the tensor. Default `-1` (auto mode).
 
-_swapin_groupby_: consuming operations whose distances among them are within `swapin_groupby` share the same swap-in operation. Default `5`.
+_swapin_groupby_: consuming operations whose distances among them are within `swapin_groupby` share the same swap-in operation. Default `0`.
 
-_swapin_ahead_: lower-bound value for LMS. A tensor will be swapped in during the backward phase at least `swapin_ahead` nodes before it in the graph. Default `-1` (auto mode).
+_swapin_ahead_: lower-bound value for LMS. A tensor will be swapped in for its consuming operation at least `swapin_ahead` nodes before the consuming operation in the graph. Default `-1` (auto mode).
 
-_sync_mode_: whether overlap data transfer and kernel computation or not. Default `False`.
+_sync_mode_: whether do synchronization between data transfer and kernel computation or not. Four modes: `0` turn off. `1` sync for only swap-out ops. `2` sync for only swap-in ops. `3` sync for both swap-out and swap-in ops. Default `0`.
+
+_serialization_: serialize operations at the same level in the topological sort. This option accepts a list of Python slicing string in which each slicing represents level indices in the topological sort. E.g. [1, 3:5, 7] means levels 1, 3, 4, 5 and 7 are serialized. Default `[]` (turn off).
 
 _debug_ :: Debug mode for LMS. Default `False`.
 
