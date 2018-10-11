@@ -41,10 +41,6 @@ class LMS(object):
     effect on the training convergence as well as inference task.
     """
     def __init__(self, graph=None,
-                 excl_scopes=set(),
-                 incl_scopes=set(),
-                 excl_types=set(),
-                 incl_types=set(),
                  swapout_threshold=-1,
                  swapin_groupby=0,
                  swapin_ahead=-1,
@@ -58,14 +54,6 @@ class LMS(object):
         Args:
           graph: the graph we will modify for LMS. This should be the graph of
             user-defined neural network.
-          excl_scopes: a set of scopes for operations whose tensors will not
-            be swapped out to the host. Default `empty`.
-          incl_scopes: a set of scopes for operations whose tensors will be
-            swapped out to the host. Default `empty`.
-          excl_types: a set of types for operations whose tensors will not be
-            swapped out to the host. Default `empty`.
-          incl_types: a set of types for operations whose tensors will be
-            swapped out to the host. Default `empty`.
           swapout_threshold: if the topological-sort distance between the
             consuming operation and generating operation of a tensor is
             greater (>) than `swapout_threshold`, then trigger swapping the
@@ -90,23 +78,27 @@ class LMS(object):
           cpu_device: the device we would like swap tensors to.
         """
         self._graph = graph
-        self._excl_scopes = excl_scopes
-        self._incl_scopes = incl_scopes
-        self._excl_types = excl_types
-        self._incl_types = incl_types
-
         self._swapout_threshold = swapout_threshold
         self._swapin_groupby = swapin_groupby
         self._swapin_ahead = swapin_ahead
         if sync_mode not in {0, 1, 2, 3}:
             raise ValueError('Invalid value for sync_mode')
-        self._sync_mode = sync_mode
+        else:
+            self._sync_mode = sync_mode
         self._serialization = serialization
-
         self._cpu_device = cpu_device
         self._debug = debug
         self._debug_level = debug_level
 
+        # optional parameters
+        self._excl_output_by_scopes = set()
+        self._excl_output_by_types = set()
+        self._excl_input_by_scopes = set()
+        self._excl_input_by_types = set()
+        self._incl_output_by_scopes = set()
+        self._incl_output_by_types = set()
+        self._incl_input_by_scopes = set()
+        self._incl_input_by_types = set()
         # https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/framework/graph_util_impl.py
         self._variable_ops = {
             "Assign",
@@ -120,7 +112,6 @@ class LMS(object):
             "Variable",
             "VariableV2",
         }
-
         # variable ops: https://github.com/tensorflow/tensorflow/blob/master/tensorflow/compiler/tf2xla/kernels/variable_ops.cc
         self._unused_types = {
             # input data
@@ -137,17 +128,78 @@ class LMS(object):
             'ResourceScatterNdUpdate', 'ResourceScatterNdAdd',
             # data filling
             'Fill', 'Range', 'RandomUniform'}
-        self._excl_types |= self._unused_types | self._variable_ops
 
         # a topological sort
         self._topo_sort = None
-
         # store information to be used to adding control dependencies
         self._swap_ops = []  # [(src_op, swapout_op, swapin_op, dest_op)]
-
         # control outputs topology
         self._control_outputs = None
         self._version = None
+
+    @property
+    def excl_output_by_scopes(self):
+        return self._excl_output_by_scopes
+    
+    @excl_output_by_scopes.setter
+    def excl_output_by_scopes(self, val):
+        self._excl_output_by_scopes = val
+
+    @property
+    def excl_output_by_types(self):
+        return self._excl_output_by_types
+    
+    @excl_output_by_types.setter
+    def excl_output_by_types(self, val):
+        self._excl_output_by_types = val
+
+    @property
+    def excl_input_by_scopes(self):
+        return self._excl_input_by_scopes
+    
+    @excl_input_by_scopes.setter
+    def excl_input_by_scopes(self, val):
+        self._excl_input_by_scopes = val
+
+    @property
+    def excl_input_by_types(self):
+        return self._excl_input_by_types
+    
+    @excl_input_by_types.setter
+    def excl_input_by_types(self, val):
+        self._excl_input_by_types = val
+
+    @property
+    def incl_output_by_scopes(self):
+        return self._incl_output_by_scopes
+    
+    @incl_output_by_scopes.setter
+    def incl_output_by_scopes(self, val):
+        self._incl_output_by_scopes = val
+
+    @property
+    def incl_output_by_types(self):
+        return self._incl_output_by_types
+    
+    @incl_output_by_types.setter
+    def incl_output_by_types(self, val):
+        self._incl_output_by_types = val
+
+    @property
+    def incl_input_by_scopes(self):
+        return self._incl_input_by_scopes
+    
+    @incl_input_by_scopes.setter
+    def incl_input_by_scopes(self, val):
+        self._incl_input_by_scopes = val
+
+    @property
+    def incl_input_by_types(self):
+        return self._incl_input_by_types
+    
+    @incl_input_by_types.setter
+    def incl_input_by_types(self, val):
+        self._incl_input_by_types = val
 
     def run(self, graph=None):
         """Edit the graph by adding swapin and swapout ops.
@@ -227,7 +279,22 @@ class LMS(object):
         self._log_histogram()  # build a histogram of distance
 
         # swapping tensors
-        self._rewrite_for_swapping()  # add swapout/swapin ops
+        # inclusive source ops
+        self._incl_src_ops = self._filter_scopes_and_types(
+            all_ops, self._incl_output_by_scopes, self._incl_output_by_types)
+        # inclusive dest ops
+        self._incl_dest_ops = self._filter_scopes_and_types(
+            all_ops, self._incl_input_by_scopes, self._incl_input_by_types)
+        # exclusive source ops
+        self._excl_src_ops = self._filter_scopes_and_types(
+            all_ops, self._excl_output_by_scopes,
+            self._excl_output_by_types | self._unused_types | self._variable_ops)
+        # exclusive dest ops
+        self._excl_dest_ops = self._filter_scopes_and_types(
+            all_ops, self._excl_input_by_scopes,
+            self._excl_input_by_types | self._unused_types | self._variable_ops)
+        # add swapout/swapin ops
+        self._rewrite_for_swapping()
         # make sure we are working with the latest control outputs topology
         self._rebuild_control_outputs()
         # add ctrl. dependencies
@@ -292,21 +359,14 @@ class LMS(object):
         Args:
           all_ops: a list of `tf.Operation`
         """
-        all_ops = set(self._graph.get_operations())
+        cand_ops = set(self._graph.get_operations())
 
-        # exclusive ops
-        _excl_ops = self._filter_scopes_and_types(
-            all_ops, self._excl_scopes, self._excl_types)
-        # inclusive ops
-        _incl_ops = self._filter_scopes_and_types(
-            all_ops, self._incl_scopes, self._incl_types)
-
-        if _incl_ops:
+        # filter by source operations
+        if self._incl_src_ops:
             # if inclusive mode is enabled,
             # only proceed included ops
-            cand_ops = _incl_ops
-        else:
-            cand_ops = all_ops - _excl_ops
+            cand_ops &= self._incl_src_ops
+        cand_ops -= self._excl_src_ops
 
         for op in cand_ops:
             self._insert_swap_nodes(op)
@@ -353,7 +413,7 @@ class LMS(object):
     def _sync_swapin(self, sin, dest, sins):
         """TODO: write comment
         """
-        self._log_info("Do synchronization for the swap-in " + 
+        self._log_info("Do synchronization for the swap-in " +
                        "{}.".format(sin.name), 1)
 
         fs = ut.fanins(dest) | set(dest.control_inputs)
@@ -419,15 +479,21 @@ class LMS(object):
             # filter by topological distance
             # candidates are ops whose distance to `src_op` is
             # greater than threshold
-            cands = [
+            cands = {
                 op
                 for op in ts.consumers()
                 if self._get_level(op) - src_op_level > self._swapout_threshold
-            ]
-            if len(cands) == 0:
-                continue
-            else:
+            }
+
+            # filter by dest operations
+            if self._incl_dest_ops:
+                cands &= self._incl_dest_ops
+            cands -= self._excl_dest_ops
+
+            if cands:
                 ts_dests[ts] = cands
+            else:
+                continue
 
         if ts_dests:
             self._log_info("Operation: {}".format(src_op.name), 1)
