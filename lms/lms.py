@@ -729,7 +729,7 @@ class LMS(object):
             candidates = {
                 op
                 for op in candidates
-                if self._is_on_longest_path(src_op, dest_op, op)
+                if self._is_reachable(op, dest_op, False)
             }
             # not in a condition scope
             candidates = {
@@ -751,9 +751,9 @@ class LMS(object):
     def _is_on_longest_path(self, src_op, dest_op, op):
         """Check if `op` is on the longest path from `src_op` to `dest_op`.
         """
-        if not self._is_reachable(src_op, op):
+        if not self._is_reachable(src_op, op, True):
             return False
-        if not self._is_reachable(op, dest_op):
+        if not self._is_reachable(op, dest_op, True):
             return False
         return True
 
@@ -776,7 +776,7 @@ class LMS(object):
                 if op.type in types}
         return ops
 
-    def _is_reachable(self, src_op, dest_op):
+    def _is_reachable(self, src_op, dest_op, via_longest=True):
         """Check whether there exists a path from src_op to dest_op.
         The path's length must be equal to the distance from
         `src_op` to `dest_ops`. In other words, we search for the
@@ -796,6 +796,10 @@ class LMS(object):
         for l in range(src_level+1, dest_level):
             latest_ops = self._get_ops_by_level(l)
             latest_ops &= fanouts
+
+            if not via_longest:
+                if dest_op in latest_ops:
+                    return True
 
             fanouts = set()
             for op in latest_ops:
@@ -830,7 +834,7 @@ class LMS(object):
         Return:
           a set of `tf.Operation`
         """
-        return self._topo_sort.get_ops(level)
+        return self._topo_sort.get_ops(level).copy()
 
     def _log_info(self, message, level=0, offset=0):
         """Log debug information.
