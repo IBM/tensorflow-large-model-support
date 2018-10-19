@@ -465,7 +465,12 @@ class LMS(object):
           src_op: a `tf.Operation`
         """
         self._log_info("Operation: {}".format(src_op), 2)
-
+        if self._debug and self._debug_level >= 2:
+            for ts in src_op.outputs:
+                self._log_info("Output tensor: {}".format(ts), 2, 1)
+                for op in ts.consumers():
+                    self._log_info("Consuming op: {}".format(op.name), 2, 2)
+        
         # obtain candidates
         ts_dests = {}
         src_op_level = self._get_level(src_op)
