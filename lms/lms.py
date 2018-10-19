@@ -695,7 +695,7 @@ class LMS(object):
         """
         self._log_info("Find a control dependency for swapping in" +
                        " {} (level {})".format(dest_op.name,
-                                               self._get_level(dest_op)))
+                                               self._get_level(dest_op)), 1)
 
         re = self._search_by_level(src_op, dest_op, ahead)
 
