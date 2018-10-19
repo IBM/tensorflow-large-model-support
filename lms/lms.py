@@ -688,6 +688,10 @@ class LMS(object):
           dest_op: a `tf.Operation`.
           swapin_op: a `tf.Operation`.
         """
+        self._log_info("Find a control dependency for swapping in" +
+                       " {} (level {})".format(dest_op.name,
+                                               self._get_level(dest_op)))
+
         re = self._search_by_level(src_op, dest_op, ahead)
 
         ctrld_op = re[0]
@@ -919,14 +923,19 @@ class LMS(object):
         if not flag:
             self._update_control_outputs({cops}, {op})
             self._log_info(
-                "Control dependency: {} => {}".format(
-                    cops.name, op.name), 1, offset)
+                "Control dependency: {} (level {}) => {} (level {})".format(
+                    cops.name, self._get_level(cops),
+                    op.name, self._get_level(op)),
+                1, offset)
         else:
             self._update_control_outputs(cops, {op})
             for cop in cops:
                 self._log_info(
-                    "Control dependency: {} => {}".format(
-                        cop.name, op.name), 1, offset)
+                    "Control dependency: " +
+                    "{} (level {}) => {} (level {})".format(
+                        cop.name, self._get_level(cop),
+                        op.name, self._get_level(op)),
+                    1, offset)
 
     def _log_histogram(self):
         """Log a histogram of distances for edges emanated from `all_ops`.
