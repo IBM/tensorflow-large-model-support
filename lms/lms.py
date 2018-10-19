@@ -779,7 +779,7 @@ class LMS(object):
         ops = set()
         for scope in scopes:
             ops |= {op for op in within_ops
-                    if scope in op.name}
+                    if op.name.startswith(scope)}
         ops |= {op
                 for op in within_ops
                 if op.type in types}
