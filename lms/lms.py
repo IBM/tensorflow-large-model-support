@@ -800,12 +800,13 @@ class LMS(object):
         for l in range(src_level+1, dest_level):
             latest_ops = self._get_ops_by_level(l)
             latest_ops &= fanouts
-
+            
             if not via_longest:
                 if dest_op in latest_ops:
                     return True
-
-            fanouts = set()
+            else:
+                fanouts = set()
+            
             for op in latest_ops:
                 fanouts |= ut.fanouts(op)
 
