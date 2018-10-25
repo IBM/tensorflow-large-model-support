@@ -13,7 +13,7 @@ following guidelines cover three ways to train:
 
 ### [Session](https://www.tensorflow.org/programmers_guide/graphs)-based training
 ```python
-from lms import LMS
+from tensorflow_large_model_support import LMS
 lms_obj = LMS(graph=tf.get_default_graph())
 lms_obj.run()
 ```
@@ -27,7 +27,7 @@ with tf.Session() as sess:
 ```
 - After inserting LMS code
 ```python
-from lms import LMS
+from tensorflow_large_model_support import LMS
 lms_obj = LMS(graph=tf.get_default_graph())
 lms_obj.run()
 
@@ -43,7 +43,7 @@ which is an LMS enabled version of `https://github.com/tensorflow/tensorflow/blo
 ### [Estimator](https://www.tensorflow.org/programmers_guide/estimators)-based training
 ```python
 #### Step 1: define a hook for Large Model Support (LMSSessionRunHook and LMS share the same set of parameters)
-from lms import LMSSessionRunHook
+from tensorflow_large_model_support import LMSSessionRunHook
 lms_hook = LMSSessionRunHook()
 ```
 #### Step 2: add the LMSSessionRunHook into Estimator's hook list
@@ -61,7 +61,7 @@ which is an LMS enabled version of `https://github.com/tensorflow/tensorflow/blo
 ### [tf.keras](https://www.tensorflow.org/api_docs/python/tf/keras)-based training
 #### Step 1: define an LMSKerasCallback.
 ```python
-from lms import LMSKerasCallback
+from tensorflow_large_model_support import LMSKerasCallback
 # LMSKerasCallback and LMS share a set of keyword arguments. Here we just
 # use the default options.
 lms_callback = LMSKerasCallback()
@@ -95,7 +95,7 @@ _debug_level_ :: Debug level for LMS (1 or 2). Default `1`.
 
 ### TensorFlow and LMS
 
-TensorFlow version >= 1.8 has a mechanism for memory optimization. Though the 
+TensorFlow version >= 1.8 has a mechanism for memory optimization. Though the
 mechanism totally works well with this LMS module, it is recommended to switch
 its mode to `SCHEDULING_HEURISTICS` to allow training as large a model as
 possible. This can be done via the following snippet code:

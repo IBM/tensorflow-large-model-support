@@ -17,8 +17,8 @@
 import tensorflow as tf
 
 import time
-from lms import topos
-from lms import util as ut
+from tensorflow_large_model_support import topos
+from tensorflow_large_model_support import util as ut
 
 
 class LMS(object):

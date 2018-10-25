@@ -150,7 +150,7 @@ def main(unused_argv):
       shuffle=True)
 
   # Hook for Large Model Support
-  from lms import LMSSessionRunHook
+  from tensorflow_large_model_support import LMSSessionRunHook
   lms_hook = LMSSessionRunHook(swapin_ahead=3, debug=True)
 
   mnist_classifier.train(

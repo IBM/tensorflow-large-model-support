@@ -15,7 +15,7 @@
 
 """TOPOS
 """
-from lms import util as ut
+from tensorflow_large_model_support import util as ut
 
 
 class TOPOS(object):
