@@ -14,11 +14,7 @@
 # ==============================================================================
 """LMS
 """
-from tensorflow.python.platform import tf_logging
-from tensorflow.python.framework import ops
-from tensorflow.python.ops import array_ops
-from tensorflow.python.training import session_run_hook
-from tensorflow.python.keras.callbacks import Callback
+import tensorflow as tf
 
 import time
 from lms import topos
@@ -574,8 +570,8 @@ class LMS(object):
         Return:
           A `tf.Operation` newly added to the graph.
         """
-        with ops.device(self._cpu_device):
-            swap_out = array_ops.identity(
+        with tf.device(self._cpu_device):
+            swap_out = tf.identity(
                 ts0,
                 name="lms/swapout_{}".format(
                     ts0.name.replace("/", "_").replace(":", "_")))
@@ -620,8 +616,8 @@ class LMS(object):
         self._log_info("Swap-in: Tensor {} (shape: {})".format(
             ts0.name, ts0.shape), 1, 2)
 
-        with ops.device(self._cpu_device):
-            swap_in = array_ops.identity(
+        with tf.device(self._cpu_device):
+            swap_in = tf.identity(
                 ts0,
                 name="lms/swapin_{}".format(
                     ts0.name.replace("/", "_").replace(":", "_")))
@@ -856,9 +852,9 @@ class LMS(object):
           level: an `integer`.
         """
         if level == 0 or (self._debug and self._debug_level >= level):
-            # Use tf_logging.info instead of print, since print
+            # Use tf.logging.info instead of print, since print
             # is not thread safe, which can break tests.
-            tf_logging.info("[LMS][{}] ".format(level) +
+            tf.logging.info("[LMS][{}] ".format(level) +
                             ' '*offset +
                             "{}".format(message))
 
@@ -976,7 +972,7 @@ class LMS(object):
         return hist
 
 
-class LMSSessionRunHook(session_run_hook.SessionRunHook):
+class LMSSessionRunHook(tf.train.SessionRunHook):
     ''' This hook is to modify the input graph for Large Model Support
     by adding swap operations.
     '''
@@ -994,10 +990,10 @@ class LMSSessionRunHook(session_run_hook.SessionRunHook):
         self.lms_obj = LMS(**kwargs)
 
     def begin(self):
-        self.lms_obj.run(ops.get_default_graph())
+        self.lms_obj.run(tf.get_default_graph())
 
 
-class LMSKerasCallback(Callback):
+class LMSKerasCallback(tf.keras.callbacks.Callback):
     """This callback is to modify the input graph for Large Model Support
     during Keras training / fit by adding swap operations.
     """
@@ -1021,6 +1017,6 @@ class LMSKerasCallback(Callback):
 
     def set_model(self, model):
         self.model = model
-        lmsMod = LMS(graph=ops.get_default_graph(),
+        lmsMod = LMS(graph=tf.get_default_graph(),
                      **self._lms_args)
         lmsMod.run()
