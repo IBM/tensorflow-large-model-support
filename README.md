@@ -42,11 +42,11 @@ which is an LMS enabled version of `https://github.com/tensorflow/tensorflow/blo
 
 ### [Estimator](https://www.tensorflow.org/programmers_guide/estimators)-based training
 ```python
-#### Step 1: define a hook for Large Model Support (LMSHook and LMS share the same set of parameters)
-from lms import LMSHook
-lms_hook = LMSHook()
+#### Step 1: define a hook for Large Model Support (LMSSessionRunHook and LMS share the same set of parameters)
+from lms import LMSSessionRunHook
+lms_hook = LMSSessionRunHook()
 ```
-#### Step 2: add the LMSHook into Estimator's hook list
+#### Step 2: add the LMSSessionRunHook into Estimator's hook list
 ```python
 mnist_classifier.train(
       input_fn=train_input_fn,
@@ -71,9 +71,9 @@ lms_callback = LMSKerasCallback()
 model.fit_generator(generator=training_gen, callbacks=[lms_callback])
 ```
 
-### Parameters for LMS/LMSHook/LMSKerasCallback
+### Parameters for LMS/LMSSessionRunHook/LMSKerasCallback
 #### Required parameters
-_graph_ :: the graph we will modify for LMS. This should be the graph of user-defined neural network. (not required in LMSHook and LMSKerasCallback)
+_graph_ :: the graph we will modify for LMS. This should be the graph of user-defined neural network. (not required in LMSSessionRunHook and LMSKerasCallback)
 
 #### Optional parameters
 _swapout_threshold_: if the topological-sort distance between the consuming operation and generating operation of a tensor is greater (>) than `swapout_threshold`, then trigger swapping the tensor. Default `-1` (auto mode).

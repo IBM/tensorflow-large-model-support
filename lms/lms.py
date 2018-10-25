@@ -17,6 +17,8 @@
 from tensorflow.python.platform import tf_logging
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
+from tensorflow.python.training import session_run_hook
+from tensorflow.python.keras.callbacks import Callback
 
 import time
 from lms import topos
@@ -140,7 +142,7 @@ class LMS(object):
     @property
     def excl_output_by_scopes(self):
         return self._excl_output_by_scopes
-    
+
     @excl_output_by_scopes.setter
     def excl_output_by_scopes(self, val):
         self._excl_output_by_scopes = val
@@ -148,7 +150,7 @@ class LMS(object):
     @property
     def excl_output_by_types(self):
         return self._excl_output_by_types
-    
+
     @excl_output_by_types.setter
     def excl_output_by_types(self, val):
         self._excl_output_by_types = val
@@ -156,7 +158,7 @@ class LMS(object):
     @property
     def excl_input_by_scopes(self):
         return self._excl_input_by_scopes
-    
+
     @excl_input_by_scopes.setter
     def excl_input_by_scopes(self, val):
         self._excl_input_by_scopes = val
@@ -164,7 +166,7 @@ class LMS(object):
     @property
     def excl_input_by_types(self):
         return self._excl_input_by_types
-    
+
     @excl_input_by_types.setter
     def excl_input_by_types(self, val):
         self._excl_input_by_types = val
@@ -172,7 +174,7 @@ class LMS(object):
     @property
     def incl_output_by_scopes(self):
         return self._incl_output_by_scopes
-    
+
     @incl_output_by_scopes.setter
     def incl_output_by_scopes(self, val):
         self._incl_output_by_scopes = val
@@ -180,7 +182,7 @@ class LMS(object):
     @property
     def incl_output_by_types(self):
         return self._incl_output_by_types
-    
+
     @incl_output_by_types.setter
     def incl_output_by_types(self, val):
         self._incl_output_by_types = val
@@ -188,7 +190,7 @@ class LMS(object):
     @property
     def incl_input_by_scopes(self):
         return self._incl_input_by_scopes
-    
+
     @incl_input_by_scopes.setter
     def incl_input_by_scopes(self, val):
         self._incl_input_by_scopes = val
@@ -196,7 +198,7 @@ class LMS(object):
     @property
     def incl_input_by_types(self):
         return self._incl_input_by_types
-    
+
     @incl_input_by_types.setter
     def incl_input_by_types(self, val):
         self._incl_input_by_types = val
@@ -326,7 +328,7 @@ class LMS(object):
           input: None
           output: reading ops, Assign, writing ops, ...
         ```
-        """ 
+        """
         init_ops = set()
         for x in vars:
             outs = ut.fanouts(x)
@@ -470,7 +472,7 @@ class LMS(object):
                 self._log_info("Output tensor: {}".format(ts), 2, 1)
                 for op in ts.consumers():
                     self._log_info("Consuming op: {}".format(op.name), 2, 2)
-        
+
         # obtain candidates
         ts_dests = {}
         src_op_level = self._get_level(src_op)
@@ -608,7 +610,7 @@ class LMS(object):
 
         Args:
           swapout_op: a `tf.Operation` that swapped out the tensor `ts0`.
-          dest_ops: a set of `tf.Operation` that will consume the output 
+          dest_ops: a set of `tf.Operation` that will consume the output
                     tensor of `swapout_op`.
           ts0: a `tf.Tensor` being the original input tensor of `dest_op`.
 
@@ -805,13 +807,13 @@ class LMS(object):
         for l in range(src_level+1, dest_level):
             latest_ops = self._get_ops_by_level(l)
             latest_ops &= fanouts
-            
+
             if not via_longest:
                 if dest_op in latest_ops:
                     return True
             else:
                 fanouts = set()
-            
+
             for op in latest_ops:
                 fanouts |= ut.fanouts(op)
 
@@ -837,7 +839,7 @@ class LMS(object):
 
     def _get_ops_by_level(self, level):
         """Return a set of ops with the given level.
-        
+
         Args:
           level: an integer.
 
@@ -907,7 +909,7 @@ class LMS(object):
                 self._control_outputs[op] |= couts
             else:
                 self._control_outputs[op] = couts
-    
+
     def _add_control_inputs(self, op, cops, offset=0):
         """Add control dependencies from `cops` to `op`.
 
@@ -965,10 +967,60 @@ class LMS(object):
                     hist[dist] += 1
                 else:
                     hist[dist] = 1
-        
+
         for v in sorted(hist):
             f.write("{}\t{}\n".format(v, hist[v]))
         f.close()
         self._log_info(
             "A histogram of distances was written to {}".format(f_name))
         return hist
+
+
+class LMSSessionRunHook(session_run_hook.SessionRunHook):
+    ''' This hook is to modify the input graph for Large Model Support
+    by adding swap operations.
+    '''
+    def __init__(self, **kwargs):
+        """Create an LMSSessionRunHook object to edit the graph for supporting large model.
+
+        Args:
+          optimizer_scopes: a set of scopes for the optimizers/solvers.
+          kwargs: the kwargs to pass to LMS. Note, the `graph` argument is
+                  removed from the kwargs before initializing LMS because
+                  the graph is obtained automatically by the SessionRunHook and
+                  is generally not available at hook initilization time.
+        """
+        kwargs.pop('graph', None)
+        self.lms_obj = LMS(**kwargs)
+
+    def begin(self):
+        self.lms_obj.run(ops.get_default_graph())
+
+
+class LMSKerasCallback(Callback):
+    """This callback is to modify the input graph for Large Model Support
+    during Keras training / fit by adding swap operations.
+    """
+
+    def __init__(self, **kwargs):
+        """Create an LMSKerasCallback object to edit the graph for
+           supporting large model tensor swapping when using TensorFlow Keras.
+
+        Args:
+          optimizer_scopes_override: by default the LMSKerasCallback will
+                automatically discover the optimizer scopes from the Keras
+                model. This parameter allows overriding that automatic
+                discovery with a set of optimizer scope names.
+          kwargs: the kwargs to pass to LMS. Note, the `graph` argument is
+                  removed from the kwargs and not used for initializing LMS
+                  because the graph is obtained automatically by the
+                  Keras callback during the set_model method.
+        """
+        self._lms_args = kwargs
+        self._lms_args.pop('graph', None)
+
+    def set_model(self, model):
+        self.model = model
+        lmsMod = LMS(graph=ops.get_default_graph(),
+                     **self._lms_args)
+        lmsMod.run()
