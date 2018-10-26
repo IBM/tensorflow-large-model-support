@@ -151,7 +151,7 @@ def main(_):
   accuracy = tf.reduce_mean(correct_prediction)
 
   # Enable Large Model Support
-  from lms import LMS
+  from tensorflow_large_model_support import LMS
   lms_model = LMS(excl_scopes={'loss', 'accuracy', 'dropout'},
                   swapout_threshold=50, swapin_ahead=3)
   lms_model.run(tf.get_default_graph())

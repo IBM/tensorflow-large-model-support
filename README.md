@@ -13,7 +13,7 @@ following guidelines cover three ways to train:
 
 ### [Session](https://www.tensorflow.org/programmers_guide/graphs)-based training
 ```python
-from lms import LMS
+from tensorflow_large_model_support import LMS
 lms_obj = LMS(graph=tf.get_default_graph())
 lms_obj.run()
 ```
@@ -27,7 +27,7 @@ with tf.Session() as sess:
 ```
 - After inserting LMS code
 ```python
-from lms import LMS
+from tensorflow_large_model_support import LMS
 lms_obj = LMS(graph=tf.get_default_graph())
 lms_obj.run()
 
@@ -42,11 +42,11 @@ which is an LMS enabled version of `https://github.com/tensorflow/tensorflow/blo
 
 ### [Estimator](https://www.tensorflow.org/programmers_guide/estimators)-based training
 ```python
-#### Step 1: define a hook for Large Model Support (LMSHook and LMS share the same set of parameters)
-from lms import LMSHook
-lms_hook = LMSHook()
+#### Step 1: define a hook for Large Model Support (LMSSessionRunHook and LMS share the same set of parameters)
+from tensorflow_large_model_support import LMSSessionRunHook
+lms_hook = LMSSessionRunHook()
 ```
-#### Step 2: add the LMSHook into Estimator's hook list
+#### Step 2: add the LMSSessionRunHook into Estimator's hook list
 ```python
 mnist_classifier.train(
       input_fn=train_input_fn,
@@ -61,7 +61,7 @@ which is an LMS enabled version of `https://github.com/tensorflow/tensorflow/blo
 ### [tf.keras](https://www.tensorflow.org/api_docs/python/tf/keras)-based training
 #### Step 1: define an LMSKerasCallback.
 ```python
-from lms import LMSKerasCallback
+from tensorflow_large_model_support import LMSKerasCallback
 # LMSKerasCallback and LMS share a set of keyword arguments. Here we just
 # use the default options.
 lms_callback = LMSKerasCallback()
@@ -71,9 +71,9 @@ lms_callback = LMSKerasCallback()
 model.fit_generator(generator=training_gen, callbacks=[lms_callback])
 ```
 
-### Parameters for LMS/LMSHook/LMSKerasCallback
+### Parameters for LMS/LMSSessionRunHook/LMSKerasCallback
 #### Required parameters
-_graph_ :: the graph we will modify for LMS. This should be the graph of user-defined neural network. (not required in LMSHook and LMSKerasCallback)
+_graph_ :: the graph we will modify for LMS. This should be the graph of user-defined neural network. (not required in LMSSessionRunHook and LMSKerasCallback)
 
 #### Optional parameters
 _swapout_threshold_: if the topological-sort distance between the consuming operation and generating operation of a tensor is greater (>) than `swapout_threshold`, then trigger swapping the tensor. Default `-1` (auto mode).
@@ -95,7 +95,7 @@ _debug_level_ :: Debug level for LMS (1 or 2). Default `1`.
 
 ### TensorFlow and LMS
 
-TensorFlow version >= 1.8 has a mechanism for memory optimization. Though the 
+TensorFlow version >= 1.8 has a mechanism for memory optimization. Though the
 mechanism totally works well with this LMS module, it is recommended to switch
 its mode to `SCHEDULING_HEURISTICS` to allow training as large a model as
 possible. This can be done via the following snippet code:
