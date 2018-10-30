@@ -296,10 +296,11 @@ class LMS(object):
         # make sure we are working with the latest control outputs topology
         self._rebuild_control_outputs()
         # add ctrl. dependencies
-        if self._sync_mode == 0:  # async mode
-            self._add_control_dependencies()
-        else:  # sync mode
-            self._sync_ops(self._sync_mode)
+        if self._swap_ops:
+            if self._sync_mode == 0:  # async mode
+                self._add_control_dependencies()
+            else:  # sync mode
+                self._sync_ops(self._sync_mode)
 
         # print log information
         n_swapout_ops = len({op[1] for op in self._swap_ops})
