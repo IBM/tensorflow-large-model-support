@@ -17,7 +17,7 @@ from tensorflow_large_model_support import topos
 from tensorflow_large_model_support import util as ut
 
 
-class LMS(object):
+class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
     """LMS class for Large Model Support (LMS).
 
     The `LMS` object statically modifies a model by swapping its tensors
@@ -968,52 +968,16 @@ class LMS(object):
             "A histogram of distances was written to {}".format(f_name))
         return hist
 
-
-class LMSSessionRunHook(tf.train.SessionRunHook):
-    ''' This hook is to modify the input graph for Large Model Support
-    by adding swap operations.
-    '''
-    def __init__(self, **kwargs):
-        """Create an LMSSessionRunHook object to edit the graph for supporting large model.
-
-        Args:
-          optimizer_scopes: a set of scopes for the optimizers/solvers.
-          kwargs: the kwargs to pass to LMS. Note, the `graph` argument is
-                  removed from the kwargs before initializing LMS because
-                  the graph is obtained automatically by the SessionRunHook and
-                  is generally not available at hook initilization time.
-        """
-        kwargs.pop('graph', None)
-        self.lms_obj = LMS(**kwargs)
-
+    # Implementation of begin from tf.train.SessionRunHook
     def begin(self):
-        self.lms_obj.run(tf.get_default_graph())
-
-
-class LMSKerasCallback(tf.keras.callbacks.Callback):
-    """This callback is to modify the input graph for Large Model Support
-    during Keras training / fit by adding swap operations.
-    """
-
-    def __init__(self, **kwargs):
-        """Create an LMSKerasCallback object to edit the graph for
-           supporting large model tensor swapping when using TensorFlow Keras.
-
-        Args:
-          optimizer_scopes_override: by default the LMSKerasCallback will
-                automatically discover the optimizer scopes from the Keras
-                model. This parameter allows overriding that automatic
-                discovery with a set of optimizer scope names.
-          kwargs: the kwargs to pass to LMS. Note, the `graph` argument is
-                  removed from the kwargs and not used for initializing LMS
-                  because the graph is obtained automatically by the
-                  Keras callback during the set_model method.
+        """Implementation of the begin method which is inherited from
+        tf.train.SessionRunHook.
         """
-        self._lms_args = kwargs
-        self._lms_args.pop('graph', None)
+        self.run(tf.get_default_graph())
 
+    # from tf.keras.callbacks.Callback
     def set_model(self, model):
-        self.model = model
-        lmsMod = LMS(graph=tf.get_default_graph(),
-                     **self._lms_args)
-        lmsMod.run()
+        """Implementation of the set_model method which is inherited from
+        tf.keras.callbacks.Callback.
+        """
+        self.run(tf.get_default_graph())
