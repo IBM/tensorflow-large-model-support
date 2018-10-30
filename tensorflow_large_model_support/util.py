@@ -1,3 +1,13 @@
+# *****************************************************************
+#
+# Licensed Materials - Property of IBM
+#
+# (C) Copyright IBM Corp. 2018. All Rights Reserved.
+#
+# US Government Users Restricted Rights - Use, duplication or
+# disclosure restricted by GSA ADP Schedule Contract with IBM Corp.
+#
+# *****************************************************************
 """Utility functions for editing graph
 """
 
@@ -67,11 +77,11 @@ def build_control_outputs(graph):
             else:
                 control_outputs[cin] = {op}
     return control_outputs
-                
+
 
 def reroute_input(ts0, ts1, op1):
     """Replace the input `ts1` of operation `op1` by tensor `ts0`.
     """
     for i, t in enumerate(op1.inputs):
         if t is ts1:
-            op1._update_input(i, ts0)  # pylint: disable=protected-access 
+            op1._update_input(i, ts0)  # pylint: disable=protected-access

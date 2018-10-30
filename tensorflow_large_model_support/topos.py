@@ -1,17 +1,13 @@
+# *****************************************************************
+#
+# Licensed Materials - Property of IBM
+#
 # (C) Copyright IBM Corp. 2018. All Rights Reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# US Government Users Restricted Rights - Use, duplication or
+# disclosure restricted by GSA ADP Schedule Contract with IBM Corp.
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# *****************************************************************
 
 """TOPOS
 """
@@ -63,7 +59,7 @@ class TOPOS(object):
 
     def serialize_for(self, levels, min=1):
         """Serialize ops for multiple levels in the topological sort
-        
+
         Args:
           levels: a list of strings of Python slicings
         """
@@ -101,7 +97,7 @@ class TOPOS(object):
         xs = self.get_ops(level)
         if xs is None:
             return set()
-                
+
         # do not serialize levels including ops in the "/cond/" scope.
         cond_ops = {op for op in xs if "/cond/" in op.name}
         if len(cond_ops) > 0:
