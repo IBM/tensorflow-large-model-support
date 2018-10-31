@@ -34,7 +34,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
     operations on the host. In theory, this procedure does not have any
     effect on the training convergence as well as inference task.
     """
-    def __init__(self, graph=None,
+    def __init__(self,
                  swapout_threshold=-1,
                  swapin_groupby=0,
                  swapin_ahead=-1,
@@ -46,8 +46,6 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         """Create an LMS object to edit the graph for supporting large model.
 
         Args:
-          graph: the graph we will modify for LMS. This should be the graph of
-            user-defined neural network.
           swapout_threshold: if the topological-sort distance between the
             consuming operation and generating operation of a tensor is
             greater (>) than `swapout_threshold`, then trigger swapping the
@@ -71,7 +69,6 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
           debug_level: debug level for LMS (1 or 2). Default `1`.
           cpu_device: the device we would like swap tensors to.
         """
-        self._graph = graph
         self._swapout_threshold = swapout_threshold
         self._swapin_groupby = swapin_groupby
         self._swapin_ahead = swapin_ahead
@@ -195,23 +192,26 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
     def incl_input_by_types(self, val):
         self._incl_input_by_types = val
 
-    def run(self, graph=None):
+    def run(self, graph):
         """Edit the graph by adding swapin and swapout ops.
 
         Swapin and swapout ops are in the host.
 
         The graph is modified in-place.
 
+        Args:
+          graph: the graph we will modify for LMS. This should be the graph of
+            user-defined neural network.
         Return:
 
           a set of added ops.
         """
-        if graph:
-            self._graph = graph
 
-        if not self._graph:
+        if not graph:
             raise ValueError('The dataflow graph is required but has not been'
                              ' provided.')
+        self._graph = graph
+
         self._version = self._graph.version
 
         self._log_info("Editing model for LMS")
