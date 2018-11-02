@@ -14,22 +14,15 @@ following guidelines cover three ways to train:
 ### [Session](https://www.tensorflow.org/programmers_guide/graphs)-based training
 ```python
 from tensorflow_large_model_support import LMS
-lms_obj = LMS(graph=tf.get_default_graph())
-lms_obj.run()
+lms_obj = LMS()
+lms_obj.run(tf.get_default_graph())
 ```
 The above lines must be put before starting a training session, for example:
-- Before inserting LMS code
 ```python
-with tf.Session() as sess:
-    sess.run(tf.global_variables_initializer())
-	batch = mnist.train.next_batch(50)
-	train_step.run(feed_dict={x: batch[0], y_: batch[1]})
-```
-- After inserting LMS code
-```python
+# Import and run the graph modification before running a session:
 from tensorflow_large_model_support import LMS
-lms_obj = LMS(graph=tf.get_default_graph())
-lms_obj.run()
+lms_obj = LMS()
+lms_obj.run(tf.get_default_graph())
 
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
@@ -42,11 +35,11 @@ which is an LMS enabled version of `https://github.com/tensorflow/tensorflow/blo
 
 ### [Estimator](https://www.tensorflow.org/programmers_guide/estimators)-based training
 ```python
-#### Step 1: define a hook for Large Model Support (LMSSessionRunHook and LMS share the same set of parameters)
-from tensorflow_large_model_support import LMSSessionRunHook
-lms_hook = LMSSessionRunHook()
+#### Step 1: Import and initialize LMS
+from tensorflow_large_model_support import LMS
+lms_hook = LMS()
 ```
-#### Step 2: add the LMSSessionRunHook into Estimator's hook list
+#### Step 2: Add the LMS object into Estimator's hook list
 ```python
 mnist_classifier.train(
       input_fn=train_input_fn,
@@ -59,23 +52,18 @@ For a working example of LMS integration with Estimator based training see:
 which is an LMS enabled version of `https://github.com/tensorflow/tensorflow/blob/master/tensorflow/examples/tutorials/layers/cnn_mnist.py`.
 
 ### [tf.keras](https://www.tensorflow.org/api_docs/python/tf/keras)-based training
-#### Step 1: define an LMSKerasCallback.
+#### Step 1: Import and initialize LMS
 ```python
-from tensorflow_large_model_support import LMSKerasCallback
-# LMSKerasCallback and LMS share a set of keyword arguments. Here we just
-# use the default options.
-lms_callback = LMSKerasCallback()
+from tensorflow_large_model_support import LMS
+lms_callback = LMS()
 ```
-#### Step 2: pass the callback to the Keras `fit` or `fit_generator` function.
+#### Step 2: Add the LMS object to the callback list on the Keras
+`fit` or `fit_generator` function.
 ```python
 model.fit_generator(generator=training_gen, callbacks=[lms_callback])
 ```
 
-### Parameters for LMS/LMSSessionRunHook/LMSKerasCallback
-#### Required parameters
-_graph_ :: the graph we will modify for LMS. This should be the graph of user-defined neural network. (not required in LMSSessionRunHook and LMSKerasCallback)
-
-#### Optional parameters
+### Parameters for LMS
 _swapout_threshold_: if the topological-sort distance between the consuming operation and generating operation of a tensor is greater (>) than `swapout_threshold`, then trigger swapping the tensor. Default `-1` (auto mode).
 
 _swapin_groupby_: consuming operations whose distances among them are within `swapin_groupby` share the same swap-in operation. Default `0`.
