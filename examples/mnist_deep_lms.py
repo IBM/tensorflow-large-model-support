@@ -154,7 +154,6 @@ def main(_):
   from tensorflow_large_model_support import LMS
   lms_model = LMS(swapout_threshold=50, swapin_ahead=3)
   lms_model.excl_output_by_scopes = {'loss', 'accuracy', 'dropout'}
-  lms_model.excl_input_by_scopes = {'loss', 'accuracy', 'dropout'}
   lms_model.run(tf.get_default_graph())
 
   graph_location = tempfile.mkdtemp()
