@@ -771,14 +771,33 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         Return:
           A set of `tf.Operation`.
         """
-        ops = set()
+        ret_ops = set()
         for scope in scopes:
-            ops |= {op for op in within_ops
+            ops = {op for op in within_ops
                     if op.name.startswith(scope)}
-        ops |= {op
-                for op in within_ops
-                if op.type in types}
-        return ops
+            if not ops:
+                raise ValueError('No operations were found with scope'
+                                 ' {}.'.format(scope))
+            ret_ops |= ops
+
+        found_types = set()
+        type_ops = set()
+        for op in within_ops:
+            if op.type in types:
+                found_types.add(op.type)
+                type_ops.add(op)
+
+        # We remove unused types and variabl ops from the input list of
+        # `types` because they are constants and not user input. We only want
+        # to error if a user provided type is not found.
+        user_input_types = types - self._unused_types - self._variable_ops
+        missing_types = user_input_types - found_types
+        if missing_types:
+            raise ValueError('No operations were found with types: '
+                             ' {}.'.format(str(missing_types)))
+
+        ret_ops |= type_ops
+        return ret_ops
 
     def _is_reachable(self, src_op, dest_op, via_longest=True):
         """Check whether there exists a path from src_op to dest_op.
