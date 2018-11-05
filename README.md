@@ -34,8 +34,8 @@ For a working example of LMS integration with Session based training see:
 which is an LMS enabled version of `https://github.com/tensorflow/tensorflow/blob/master/tensorflow/examples/tutorials/mnist/mnist_deep.py`.
 
 ### [Estimator](https://www.tensorflow.org/programmers_guide/estimators)-based training
-```python
 #### Step 1: Import and initialize LMS
+```python
 from tensorflow_large_model_support import LMS
 lms_hook = LMS()
 ```
