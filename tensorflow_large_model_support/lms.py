@@ -725,11 +725,12 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
 
         range_ub = self._get_level(dest_op) - distance
         range_lb = self._get_level(src_op) + 1
+        range_lb = max(range_ub - 10, range_lb)  # try at most 10 levels back
 
         ctrld_level = -1
         for i in reversed(range(range_lb, range_ub)):
             candidates = self._get_ops_by_level(i)
-            # on the longest path from `src_op` to `dest_op`
+            # candidates should be able to reach `dest_ops`
             candidates = {
                 op
                 for op in candidates
