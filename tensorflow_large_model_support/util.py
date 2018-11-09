@@ -85,3 +85,24 @@ def reroute_input(ts0, ts1, op1):
     for i, t in enumerate(op1.inputs):
         if t is ts1:
             op1._update_input(i, ts0)  # pylint: disable=protected-access
+
+
+def get_tensor_size(ts, bs=None):
+    """Return the size of tensor in bytes.
+    The first unknown dimension of a tensor will be filled by `bs`.
+    The other unknown dimenstions of a tensor will be filled by a default
+    value.
+    """
+    d, s = 1, 1  # `d` default value for i-th unknown dimension (i != 0)
+    ndims = ts.shape.ndims
+    if ndims is None or ndims <= 1:
+        return d
+    for i in range(0, ndims):
+        v = ts.shape[i].value
+        if v is None:
+            if i == 0:
+                v = bs if bs is not None else d
+            else:
+                v = d
+        s *= v
+    return s*(ts.dtype.size)

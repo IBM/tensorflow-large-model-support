@@ -27,9 +27,12 @@ class TOPOS(object):
         self._topo_sort = []
         self._levels = {}
 
-    def build(self):
+    def build(self, graph=None):
         """Build a categorized topological sort
         """
+        if graph is not None:
+            self._graph = graph
+
         dep_dict = {}
         for op in self._graph.get_operations():
             dep_dict[op] = ut.fanins(op) | set(op.control_inputs)

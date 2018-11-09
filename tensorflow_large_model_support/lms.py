@@ -12,7 +12,11 @@
 """
 import tensorflow as tf
 
+import os
 import time
+from math import floor
+
+from tensorflow_large_model_support.simulator import Simulator
 from tensorflow_large_model_support import topos
 from tensorflow_large_model_support import util as ut
 
@@ -36,7 +40,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
     """
     def __init__(self,
                  swapout_threshold=-1,
-                 swapin_groupby=0,
+                 swapin_groupby=-1,
                  swapin_ahead=-1,
                  sync_mode=0,
                  serialization=[],
@@ -90,6 +94,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._incl_output_by_types = set()
         self._incl_input_by_scopes = set()
         self._incl_input_by_types = set()
+
+        self._batch_size = None  # this is used for AutoTune
+
         # https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/framework/graph_util_impl.py
         self._variable_ops = {
             "Assign",
@@ -127,6 +134,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         # control outputs topology
         self._control_outputs = None
         self._version = None
+
+        # a directory to store LMS-related information, such as logs.
+        self._lms_dir = ".lms"
 
     @property
     def excl_output_by_scopes(self):
@@ -191,6 +201,14 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
     @incl_input_by_types.setter
     def incl_input_by_types(self, val):
         self._incl_input_by_types = val
+
+    @property
+    def batch_size(self):
+        return self._batch_size
+
+    @batch_size.setter
+    def batch_size(self, val):
+        self._batch_size = val
 
     def run(self, graph):
         """Edit the graph by adding swapin and swapout ops.
@@ -264,14 +282,6 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                     i, [(op.name, op.type)
                         for op in self._get_ops_by_level(i)]), 1)
 
-        # roughly estimate swapin_threshold in auto mode
-        if self._swapout_threshold < 0:
-            self._log_info("Use auto mode for setting swapout_threshold")
-            self._swapout_threshold = self._topo_sort.size//2
-
-        self._print_configuration()
-        self._log_histogram()  # build a histogram of distance
-
         # swapping tensors
         # inclusive source ops
         self._incl_src_ops = self._filter_scopes_and_types(
@@ -287,6 +297,13 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._excl_dest_ops = self._filter_scopes_and_types(
             all_ops, self._excl_input_by_scopes,
             self._excl_input_by_types | self._unused_types | self._variable_ops)
+
+        # estimate LMS parameters (threshold, ahead, groupby) in auto mode
+        self._search_params()
+
+        self._print_configuration()
+        self._log_histogram()  # build a histogram of distance
+
         # add swapout/swapin ops
         self._rewrite_for_swapping()
         # make sure we are working with the latest control outputs topology
@@ -428,6 +445,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         Return:
           A list of sets of `tf.Operation`.
         """
+        if limit <= 0:
+            return [{op} for op in ops]
+
         ops_levels = [(op, self._get_level(op)) for op in ops]
         x = sorted([i[1] for i in ops_levels])
         xs = [(i, i) for i in x]
@@ -468,7 +488,6 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
 
         # obtain candidates
         ts_dests = {}
-        src_op_level = self._get_level(src_op)
         for ts in src_op.outputs:
             # filter by tensor shape
             # do not swap 1-dimension or unknown shape tensors.
@@ -479,11 +498,10 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             # filter by topological distance
             # candidates are ops whose distance to `src_op` is
             # greater than threshold
-            cands = {
-                op
-                for op in ts.consumers()
-                if self._get_level(op) - src_op_level > self._swapout_threshold
-            }
+            cands = set()
+            for op in ts.consumers():
+                if self._distance(src_op, op) > self._swapout_threshold:
+                    cands.add(op)
 
             # filter by dest operations
             if self._incl_dest_ops:
@@ -537,9 +555,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             # swap_in op
             swapin_op = self._add_swapin(swapout_op, dest_ops, ts)
             # for control dependency
-            ops_levels = [(op, self._get_level(op)) for op in dest_ops]
-            x = sorted([i[1] for i in ops_levels])[0]  # the earliest op
-            dest_op = [op[0] for op in ops_levels if op[1] == x][0]
+            dest_op = self._get_earliest_op(dest_ops)
             sin_dest.add((swapin_op, dest_op))
 
         return (swapout_op, sin_dest)
@@ -753,6 +769,115 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         else:
             return (None, -1)
 
+    def _search_params(self):
+        def binary_search(sim, L, R, threshold, ahead, groupby, idx):
+            params = {1: threshold, 2: ahead, 3: groupby}
+            while L <= R:
+                m = floor((L+R)/2)
+                start_time = time.time()
+                old_value = params[idx]
+                params[idx] = m
+                passed = play_with_time(sim, params[1], params[2], params[3])
+                if passed:
+                    L = m + 1
+                else:
+                    params[idx] = old_value  # restore the previous value
+                    R = m - 1
+            return params[idx]
+
+        def play_with_time(sim, *argv):
+            start_time = time.time()
+            passed = sim.play(argv[0], argv[1], argv[2])
+            self._log_info("took: {} ms".format((time.time()-start_time)*1000))
+            return passed
+
+        if (self._swapout_threshold >=0 and self._swapin_ahead >= 0 
+            and self._swapin_groupby >= 0):
+            return
+        
+        self._log_info(
+            "Searching values for swapout_threshold and swapin_ahead")
+        mem_ratio = float(os.getenv('TF_LMS_SIMULATOR_MEM_RATIO', 0.9))
+
+        if self._batch_size is None:
+            found = False
+            placeholders = {
+                op for op in self._graph.get_operations()
+                if op.type in {'Placeholder', 'PlaceholderWithDefault'}
+            }
+            for op in placeholders:
+                for ts in op.outputs:
+                    if ts.shape.ndims is not None and ts.shape.ndims > 0:
+                        if ts.shape[0].value is None:
+                            found = True
+            if found:
+                raise ValueError(
+                    "It seems you are feeding data via placeholders. " +
+                    "LMS has not enough information to tune parameters " +
+                    "automatically. Please set values for swapout_threshold, " +
+                    "swapin_ahead and swapin_groupby manually, " +
+                    "or input the mini-batch size you are using " +
+                    "to LMS so that LMS can tune parameters automatically.")
+                
+        sim = Simulator(self, ratio=mem_ratio, debug_level=1, plot=False)
+        if (self._swapout_threshold < 0 and self._swapin_ahead < 0
+            and self._swapin_groupby < 0):
+            # check if we really need LMS or not
+            passed = play_with_time(sim, self._topo_sort.size, 1, 0)
+            if passed:
+                self._swapout_threshold = self._topo_sort.size
+                self._log_info("LMS is not necessary. Turned LMS off.")
+                return
+
+        found_th, found_ah, found_gr = False, False, False
+        # binary search for threshold
+        if (self._swapout_threshold < 0):
+            threshold = 1
+            ahead = 1 if self._swapin_ahead < 0 else self._swapin_ahead
+            groupby = 0 if self._swapin_groupby < 0 else self._swapin_groupby
+            passed = play_with_time(sim, threshold, ahead, groupby)
+            if passed:
+               self._swapout_threshold = binary_search(
+                   sim, 1, self._topo_sort.size, threshold, ahead, groupby, 1)
+               found_th = True
+            else:
+                self._sync_mode = 3
+                return
+
+        # binary search for ahead
+        if (self._swapin_ahead < 0):
+            threshold = self._swapout_threshold
+            ahead = 1
+            groupby = 0 if self._swapin_groupby < 0 else self._swapin_groupby
+            if not found_th:
+                passed = play_with_time(sim, threshold, ahead, groupby)
+            else:
+                passed = True
+            if passed:
+               self._swapin_ahead = binary_search(
+                   sim, 1, self._topo_sort.size, threshold, ahead, groupby, 2)
+               found_ah = True
+            else:
+                self._sync_mode = 3
+                return
+
+        # binary search for groupby
+        if (self._swapin_groupby < 0):
+            threshold = self._swapout_threshold
+            ahead = self._swapin_ahead
+            groupby = 0
+            if (not found_th) and (not found_ah):
+                passed = play_with_time(sim, threshold, ahead, groupby)
+            else:
+                passed = True
+            if passed:
+               self._swapin_groupby = binary_search(
+                   sim, 0, self._topo_sort.size, threshold, ahead, groupby, 3)
+               found_gr = True
+            else:
+                self._sync_mode = 3
+                return
+
     def _is_on_longest_path(self, src_op, dest_op, op):
         """Check if `op` is on the longest path from `src_op` to `dest_op`.
         """
@@ -879,23 +1004,22 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         """Print configuration information about LMS.
         """
         self._log_info("swapout_threshold: {}".format(self._swapout_threshold))
-        self._log_info("swapin_groupby: {}".format(self._swapin_groupby))
         if self._sync_mode == 1:
             self._log_info(
                 "sync_mode was turned on for swap-out ops")
-            self._log_info("swapin_ahead: {}".format(
-                "auto mode" if self._swapin_ahead < 0 else self._swapin_ahead))
+            self._log_info("swapin_ahead: {}".format(self._swapin_ahead))
+            self._log_info("swapin_groupby: {}".format(self._swapin_groupby))
         elif self._sync_mode == 2:
             self._log_info(
                 "sync_mode was turned on for swap-in ops. " +
-                "swapin_ahead will be ignored")
+                "swapin_ahead and swapin_groupby will be ignored")
         elif self._sync_mode >= 3:
             self._log_info(
                 "sync_mode was turned on for both swap-out and swap-in ops. " +
-                "swapin_ahead will be ignored")
+                "swapin_ahead and swapin_groupby will be ignored")
         elif self._sync_mode == 0:
-            self._log_info("swapin_ahead: {}".format(
-                "auto mode" if self._swapin_ahead < 0 else self._swapin_ahead))
+            self._log_info("swapin_ahead: {}".format(self._swapin_ahead))
+            self._log_info("swapin_groupby: {}".format(self._swapin_groupby))
         else:
             pass
 
@@ -975,7 +1099,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         f.write("#distance\tfrequency\n")
         for op1 in all_ops:
             for op2 in ut.fanouts(op1):
-                dist = self._get_level(op2) - self._get_level(op1)
+                dist = self._distance(op1, op2)
+
                 if dist in hist:
                     hist[dist] += 1
                 else:
@@ -988,16 +1113,31 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             "A histogram of distances was written to {}".format(f_name))
         return hist
 
-    # Implementation of begin from tf.train.SessionRunHook
+    def _distance(self, op1, op2):
+        """Return the categorized topological sort distance from `op1` to `op2`.
+        """
+        return self._get_level(op2) - self._get_level(op1)
+
+    def _get_earliest_op(self, ops):
+        min = self._topo_sort.size
+        rop = None
+        for op in ops:
+            x = self._get_level(op)
+            if x < min:
+                min = x
+                rop = op
+        return rop
+
+    # Implementation of `begin` from tf.train.SessionRunHook
     def begin(self):
         """Implementation of the begin method which is inherited from
         tf.train.SessionRunHook.
         """
         self.run(tf.get_default_graph())
 
-    # from tf.keras.callbacks.Callback
-    def set_model(self, model):
-        """Implementation of the set_model method which is inherited from
-        tf.keras.callbacks.Callback.
-        """
+    # Implementation of `set_params` from from tf.keras.callbacks.Callback
+    def set_params(self, params):
+        self.params = params
+        if 'batch_size' in self.params:
+            self._batch_size = self.params['batch_size']
         self.run(tf.get_default_graph())
