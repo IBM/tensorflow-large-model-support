@@ -69,7 +69,7 @@ which is an LMS enabled version of `https://github.com/keras-team/keras/blob/mas
 
 
 ### Parameters for LMS
-_swapout_threshold_: the larger `swapout_threshold` is, the more tensors are swapped out to the host memory. Default `-1` (auto mode).
+_swapout_threshold_: the smaller `swapout_threshold` is, the more tensors are swapped out to the host memory. Default `-1` (auto mode).
 
 _swapin_ahead_: the larger `swapin_ahead` is, the earlier a tensor is swapped in to the GPU memory from the host memory. Default `-1` (auto mode).
 
