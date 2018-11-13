@@ -40,11 +40,10 @@ class Simulator(object):
         self._used_mem = 0
         # memory limitation
         self._max_mem = 0
-        # traces of free memory
+        # traces of used memory
         self._mem_traces = []
         # each tensor has a ref_count showing how many ops will consume it
         self._ref_counts = {}
-        self._org_ref_counts = {}
 
         # aliases
         self._graph = self._lms._graph
@@ -77,19 +76,13 @@ class Simulator(object):
         self._max_mem *= self._ratio
         self._log_info("Available memory for simulation: {}".format(
             self._max_mem), 0)
-        # simulate TensorFlow garbage collection.
-        # a tensor will be released from mem if its `ref_count` becomes zero.
-        for op in self._graph.get_operations():
-            for ts in op.outputs:
-                self._ref_counts[ts.name] = len(ts.consumers())
-        self._org_ref_counts = self._ref_counts.copy()
 
     def _reset(self):
         """Reset memory to the initial state.
         """
-        self._used_mem = 0
-        self._ref_counts = self._org_ref_counts.copy()
         self._mem = {}
+        self._ref_counts = {}
+        self._used_mem = 0
         self._mem_traces = []
 
     def play(self, threshold, ahead, groupby):
@@ -112,8 +105,6 @@ class Simulator(object):
         # increases by one.
         swapins = {}
 
-        n_swapouts = 0  # record the number of swapout tensors.
-
         # start simulating
         passed = True
         for k in range(0, self._topo_sort.size):
@@ -127,40 +118,55 @@ class Simulator(object):
             for nsl in name_size_lifetimes:
                 ts_name, ts_size, lifetime = nsl
                 self._log_info("[{}] swapped in {}".format(k, ts_name))
-                ok = self._allocate(ts_name, ts_size)
+                ok = self._allocate(ts_name, ts_size, lifetime)
                 if not ok:
                     passed = False
                     if not self._plot:
                         return passed
-                self._ref_counts[ts_name] = lifetime
 
             for op in k_ops:
                 self._log_info("[{}] execute op {}".format(k, op.name))
+                in_tensors = set(op.inputs)
+                out_tensors = set(op.outputs)
+                op_name = op.name
+                # allocate memory for inputs
+                for ts in in_tensors:
+                    ts_name = ts.name
+                    # whether this tensor was swapped in?
+                    found, _ = self._is_swapin_tensor(ts_name, op_name)
+                    if found:
+                        continue
+                    else:
+                        if ts_name not in self._mem:
+                            ok = self._allocate(
+                                ts_name, ts_size, len(ts.consumers()))
+                            if not ok:
+                                passed = False
+                                if not self._plot:
+                                    return passed
+
                 # allocate memory for outputs
-                for ts in set(op.outputs):
-                    if self._ref_counts[ts.name] == 0:
+                for ts in out_tensors:
+                    ts_name = ts.name
+                    n_consumers = len(ts.consumers())
+                    if n_consumers == 0:
                         continue    # no ops consuming `ts`
-                    ok = self._allocate(ts.name, self._ts_size(ts))
+                    ok = self._allocate(ts_name, self._ts_size(ts), n_consumers)
                     if not ok:
                         passed = False
                         if not self._plot:
                             return passed
 
                 # simulate execution
-                in_tensors = set(op.inputs)
                 for ts in in_tensors:
                     # check if the tensor is swapped in
-                    found = False
-                    for ts_name in self._mem:
-                        if (ts.name in ts_name) and (op.name in ts_name):
-                            found = True
-                            self._ref_counts[ts_name] -= 1  # a swapin tensor
-                            break
-                    if not found:
-                        self._ref_counts[ts.name] -= 1  # a normal tensor
+                    ts_name = ts.name
+                    _, s = self._is_swapin_tensor(ts_name, op_name)
+                    self._ref_counts[s] -= 1
 
                 # update ref_counts for swapout tensors
-                for ts in {x for x in swapouts if self._ref_counts[x] > 0}:
+                for ts in {x for x in swapouts
+                           if x in self._mem and self._ref_counts[x] > 0}:
                     self._ref_counts[ts] -= 1
 
                 # garbage collection
@@ -169,10 +175,12 @@ class Simulator(object):
                 # swap out tensors
                 if op in self._excl_src_ops:
                     continue
-                for ts in op.outputs:
+                for ts in out_tensors:
                     ndims = ts.shape.ndims
                     if ndims is None or ndims <= 1:
                         continue
+                    ts_name = ts.name
+                    ts_size = self._ts_size(ts)
                     dest_ops = {dest
                                 for dest in ts.consumers()
                                 if self._distance(op, dest) > threshold}
@@ -180,35 +188,33 @@ class Simulator(object):
                     if not dest_ops:
                         continue
                     # swapout tensors will be collected later
-                    self._ref_counts[ts.name] -= len(dest_ops)
-                    self._ref_counts[ts.name] += self._swapout_delay
-                    swapouts.add(ts.name)
-                    self._log_info("[{}] swapped out {}".format(k, ts.name))
+                    self._ref_counts[ts_name] -= len(dest_ops)
+                    self._ref_counts[ts_name] += self._swapout_delay
+                    swapouts.add(ts_name)
+                    self._log_info("[{}] swapped out {}".format(k, ts_name))
                     # add swapin ops
                     dests_grp = self._groupby(dest_ops, groupby)
                     for dests in dests_grp:
                         # create a new tensor to simulate swapin
-                        ts_name = ts.name + "_" + "_".join(x.name for x in dests)
-                        ts_size = self._ts_size(ts)
+                        s = ts_name + "_" + "_".join(x.name for x in dests)
+                        ts_info = (s, ts_size, len(dests))
                         # put the tensor into the swapins queue
                         dest = self._get_earliest_op(dests)
                         sin_level = self._get_level(dest) - ahead
-                        ts_info = (ts_name, ts_size, len(dests))
                         if sin_level in swapins:
                             swapins[sin_level] |= {ts_info}
                         else:
                             swapins[sin_level] = {ts_info}
-                    n_swapouts += 1  # record the no. of swapouts
 
             self._log_info("[{}] available memory {}".format(
                 k, self._get_free_mem))
 
         if self._plot:
             self._generate_diagram(threshold, ahead, groupby)
-        self._log_info("Swapped out {} tensors".format(n_swapouts))
+        self._log_info("Swapped out {} tensors".format(len(swapouts)))
         return passed
 
-    def _allocate(self, ts_name, ts_size):
+    def _allocate(self, ts_name, ts_size, lifetime):
         """Allocate memory for tensor `ts`.
 
         Return:
@@ -228,6 +234,7 @@ class Simulator(object):
         # allocate
         self._used_mem += ts_size
         self._mem[ts_name] = ts_size
+        self._ref_counts[ts_name] = lifetime
         self._mem_traces.append(self._used_mem)
         self._log_info(
             "allocated {} bytes for {}, used {}, free {}".format(
@@ -239,22 +246,22 @@ class Simulator(object):
     def _release(self, ts_name):
         """Release memory taken by tensor `ts`.
         """
-        if ts_name in self._mem:
-            ts_size = self._mem[ts_name]
-            del self._mem[ts_name]
-            self._used_mem -= ts_size
-            self._mem_traces.append(self._used_mem)
-            self._log_info(
-                "released {} bytes taken by {}, used {}, free {}".format(
-                    ts_size, ts_name,
-                    self._used_mem,
-                    self._get_free_mem()))
+        ts_size = self._mem[ts_name]
+        del self._mem[ts_name]
+        del self._ref_counts[ts_name]
+        self._used_mem -= ts_size
+        self._mem_traces.append(self._used_mem)
+        self._log_info(
+            "released {} bytes taken by {}, used {}, free {}".format(
+                ts_size, ts_name,
+                self._used_mem,
+                self._get_free_mem()))
 
     def _gc(self):
-        """Garbage collection
+        """Simulate TensorFlow garbage collection.
+        A tensor will be released from mem if its `ref_count` becomes zero.
         """
-        cands = {ts_name for ts_name in self._mem
-                 if self._ref_counts[ts_name] == 0}
+        cands = [k for k, v in self._ref_counts.items() if v == 0]
         for ts_name in cands:
             self._release(ts_name)
 
@@ -288,9 +295,17 @@ class Simulator(object):
                     format='pdf')
         plt.close()
 
-
     def _ts_size(self, ts):
         return ut.get_tensor_size(ts, self._batch_size)
+
+
+    def _is_swapin_tensor(self, ts_name, op_name):
+        """Check if the tensor is a swapin tensor or not.
+        """
+        for s in self._mem:
+            if (ts_name in s) and (op_name in s):
+                return (True, s)
+        return (False, ts_name)
 
     def _log_info(self, msg, level=-1, offset=0):
         if level >= 0:

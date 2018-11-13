@@ -95,7 +95,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._incl_input_by_scopes = set()
         self._incl_input_by_types = set()
 
-        self._batch_size = None  # this is used for AutoTune
+        # AutoTune
+        self._batch_size = None
+        self._autotune_plot = False
 
         # https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/framework/graph_util_impl.py
         self._variable_ops = {
@@ -209,6 +211,14 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
     @batch_size.setter
     def batch_size(self, val):
         self._batch_size = val
+
+    @property
+    def autotune_plot(self):
+        return self._autotune_plot
+
+    @autotune_plot.setter
+    def autotune_plot(self, val):
+        self._autotune_plot = val
 
     def run(self, graph):
         """Edit the graph by adding swapin and swapout ops.
@@ -819,7 +829,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                     "or input the mini-batch size you are using " +
                     "to LMS so that LMS can tune parameters automatically.")
                 
-        sim = Simulator(self, ratio=mem_ratio, debug_level=1, plot=False)
+        sim = Simulator(self, ratio=mem_ratio, debug_level=1,
+                        plot=self._autotune_plot)
         if (self._swapout_threshold < 0 and self._swapin_ahead < 0
             and self._swapin_groupby < 0):
             # check if we really need LMS or not
