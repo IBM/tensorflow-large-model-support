@@ -77,7 +77,7 @@ _swapin_groupby_: multiple swap-in operations of the same tensor will be grouped
 
 _sync_mode_: whether do synchronization between data transfer and kernel computation or not. Four modes: `0` turn off. `1` sync for only swap-out operations. `2` sync for only swap-in operations. `3` sync for both swap-out and swap-in operations. Default `0`.
 
-_serialization_: serialize operations at the same level in the topological sort. This option accepts a list of Python slicing string in which each slicing represents level indices in the topological sort. E.g. [1, 3:5, 7] means levels 1, 3, 4, 5 and 7 are serialized. Default `[]` (turn off).
+_serialization_: serialize operations at the same level in the topological sort. This option accepts a list of Python slicing string in which each slicing represents level indices in the topological sort. E.g. [1, '3:5', 7] means levels 1, 3, 4, 5 and 7 are serialized. Default `[]` (turn off).
 
 _debug_ :: Debug mode for LMS. Default `False`.
 

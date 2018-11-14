@@ -67,7 +67,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
           serialization: serialize operations at the same level in the
             topological sort. This option accepts a list of Python slicing
             string in which each slicing represents level indices in the
-            topological sort. E.g. [1, 3:5, 7] means levels 1, 3, 4, 5 and 7
+            topological sort. E.g. [1, '3:5', 7] means levels 1, 3, 4, 5 and 7
             are serialized. Default `[]` (turn off).
           debug: debug mode for LMS. Default `False`.
           debug_level: debug level for LMS (1 or 2). Default `1`.
@@ -801,10 +801,10 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             self._log_info("took: {} ms".format((time.time()-start_time)*1000))
             return passed
 
-        if (self._swapout_threshold >=0 and self._swapin_ahead >= 0 
+        if (self._swapout_threshold >=0 and self._swapin_ahead >= 0
             and self._swapin_groupby >= 0):
             return
-        
+
         self._log_info(
             "Searching values for swapout_threshold and swapin_ahead")
         mem_ratio = float(os.getenv('TF_LMS_SIMULATOR_MEM_RATIO', 0.9))
@@ -828,7 +828,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                     "swapin_ahead and swapin_groupby manually, " +
                     "or input the mini-batch size you are using " +
                     "to LMS so that LMS can tune parameters automatically.")
-                
+
         sim = Simulator(self, ratio=mem_ratio, debug_level=1,
                         plot=self._autotune_plot)
         if (self._swapout_threshold < 0 and self._swapin_ahead < 0
