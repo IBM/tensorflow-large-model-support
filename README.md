@@ -214,3 +214,13 @@ config = tf.ConfigProto()
 config.graph_options.rewrite_options.memory_optimization = \
 	rewriter_config_pb2.RewriterConfig.SCHEDULING_HEURISTICS
 ```
+
+## Citations
+
+### Scientific papers:
+
+Tung D. Le, Haruki Imai, Yasushi Negishi, Kiyokuni Kawachiya. [TFLMS: Large Model Support in TensorFlow by Graph Rewriting](https://arxiv.org/abs/1807.02037). eprint arXiv:1807.02037. 07/2018.
+
+### Case studies:
+
+Samuel Matzek. TensorFlow Large Model Support Case Study with 3D Image Segmentation. [https://developer.ibm.com/linuxonpower/2018/07/27/tensorflow-large-model-support-case-study-3d-image-segmentation/](https://developer.ibm.com/linuxonpower/2018/07/27/tensorflow-large-model-support-case-study-3d-image-segmentation/). IBM Developer. 07/2018.
