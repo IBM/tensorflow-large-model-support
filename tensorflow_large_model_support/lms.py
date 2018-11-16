@@ -314,7 +314,6 @@ class LMS(object):
         reachable_ops = set()
         for seed_op in seed_ops:
             reachable_ops |= set(self._get_forward_walk_ops(seed_op))
-        reachable_ops -= self._grad_ops
 
         for op in reachable_ops:
             if 'lms/swap' in op.name:
@@ -329,6 +328,8 @@ class LMS(object):
         self._incl_ops = self._filter_scopes_and_types(reachable_ops,
                                                        self._incl_scopes,
                                                        self._incl_types)
+
+        reachable_ops -= self._grad_ops
 
         # build a topological sort
         self._topo_sort = topos.TOPOS(seed_ops, self._grad_ops)
