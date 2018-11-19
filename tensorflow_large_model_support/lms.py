@@ -310,6 +310,12 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
 
         # estimate LMS parameters (threshold, ahead, groupby) in auto mode
         self._search_params()
+        if self._swapout_threshold == -1:
+            raise ValueError('Could not find a value for swapout_threshold. Please set it manually.')
+        if self._swapin_ahead == -1:
+            raise ValueError('Could not find a value for swapin_ahead. Please set it manually.')
+        if self._swapin_groupby == -1:
+            raise ValueError('Could not find a value for swapin_groupby. Please set it manually.')
 
         self._print_configuration()
         self._log_histogram()  # build a histogram of distance
@@ -848,9 +854,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             groupby = 0 if self._swapin_groupby < 0 else self._swapin_groupby
             passed = play_with_time(sim, threshold, ahead, groupby)
             if passed:
-               self._swapout_threshold = binary_search(
-                   sim, 1, self._topo_sort.size, threshold, ahead, groupby, 1)
-               found_th = True
+                self._swapout_threshold = binary_search(
+                    sim, 1, self._topo_sort.size, threshold, ahead, groupby, 1)
+                found_th = True
             else:
                 self._sync_mode = 3
                 return
@@ -865,9 +871,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             else:
                 passed = True
             if passed:
-               self._swapin_ahead = binary_search(
-                   sim, 1, self._topo_sort.size, threshold, ahead, groupby, 2)
-               found_ah = True
+                self._swapin_ahead = binary_search(
+                    sim, 1, self._topo_sort.size, threshold, ahead, groupby, 2)
+                found_ah = True
             else:
                 self._sync_mode = 3
                 return
