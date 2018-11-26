@@ -1155,6 +1155,6 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
     # Implementation of `set_params` from from tf.keras.callbacks.Callback
     def set_params(self, params):
         self.params = params
-        if 'batch_size' in self.params:
+        if params.get('batch_size'):
             self._batch_size = self.params['batch_size']
         self.run(tf.get_default_graph())
