@@ -310,6 +310,10 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
 
         # estimate LMS parameters (threshold, ahead, groupby) in auto mode
         self._search_params()
+        if self._swapout_threshold == self._topo_sort.size:
+            self._log_info("LMS is not necessary. Turned LMS off.")
+            return
+
         if self._swapout_threshold == -1:
             raise ValueError('Could not find a value for swapout_threshold. Please set it manually.')
         if self._swapin_ahead == -1:
@@ -843,7 +847,6 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             passed = play_with_time(sim, self._topo_sort.size, 1, 0)
             if passed:
                 self._swapout_threshold = self._topo_sort.size
-                self._log_info("LMS is not necessary. Turned LMS off.")
                 return
 
         found_th, found_ah, found_gr = False, False, False
