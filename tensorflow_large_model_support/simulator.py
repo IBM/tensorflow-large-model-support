@@ -138,6 +138,7 @@ class Simulator(object):
                         continue
                     else:
                         if ts_name not in self._mem:
+                            ts_size = self._ts_size(ts)
                             ok = self._allocate(
                                 ts_name, ts_size, len(ts.consumers()))
                             if not ok:
@@ -151,7 +152,8 @@ class Simulator(object):
                     n_consumers = len(ts.consumers())
                     if n_consumers == 0:
                         continue    # no ops consuming `ts`
-                    ok = self._allocate(ts_name, self._ts_size(ts), n_consumers)
+                    ts_size = self._ts_size(ts)
+                    ok = self._allocate(ts_name, ts_size, n_consumers)
                     if not ok:
                         passed = False
                         if not self._plot:
