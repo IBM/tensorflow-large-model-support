@@ -309,17 +309,16 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             self._excl_input_by_types | self._unused_types | self._variable_ops)
 
         # estimate LMS parameters (threshold, ahead, groupby) in auto mode
-        self._search_params()
-        if self._swapout_threshold == self._topo_sort.size:
-            self._log_info("LMS is not necessary. Turned LMS off.")
-            return
-
-        if self._swapout_threshold == -1:
-            raise ValueError('Could not find a value for swapout_threshold. Please set it manually.')
-        if self._swapin_ahead == -1:
-            raise ValueError('Could not find a value for swapin_ahead. Please set it manually.')
-        if self._swapin_groupby == -1:
-            raise ValueError('Could not find a value for swapin_groupby. Please set it manually.')
+        if (self._swapout_threshold >= 0
+            and self._swapin_ahead >= 0
+            and self._swapin_groupby >= 0):
+            pass
+        else:
+            self._search_params()
+            if self._swapout_threshold == self._topo_sort.size:
+                self._log_info("LMS is not necessary. Turned LMS off.")
+                return
+            self._validate_parameters()
 
         self._print_configuration()
         self._log_histogram()  # build a histogram of distance
@@ -333,7 +332,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             if self._sync_mode == 0:  # async mode
                 self._add_control_dependencies()
             else:  # sync mode
-                self._sync_ops(self._sync_mode)
+                self._sync_ops()
 
         # print log information
         n_swapout_ops = len({op[1] for op in self._swap_ops})
@@ -403,19 +402,19 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         for op in cand_ops:
             self._insert_swap_nodes(op)
 
-    def _sync_ops(self, sync_mode):
+    def _sync_ops(self):
         """TODO: write comment
         """
         src, sout, sin, dest = 0, 1, 2, 3
         # sync for swap-out ops
-        if sync_mode in {1, 3}:
+        if self._is_swapout_sync():
             souts = {op[sout] for op in self._swap_ops}
             src_sout = {(op[src], op[sout]) for op in self._swap_ops}
             for src, sout in src_sout:
                 self._sync_swapout(src, sout, souts)
 
         # sync for swap-in ops
-        if sync_mode in {2, 3}:
+        if self._is_swapin_sync():
             sins = {op[sin] for op in self._swap_ops}
             sin_dest = {(op[sin], op[dest]) for op in self._swap_ops}
             for sin, dest in sin_dest:
@@ -789,12 +788,28 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         else:
             return (None, -1)
 
+    def _validate_parameters(self):
+        if self._swapout_threshold == -1:
+            raise ValueError(
+                'Auto-tuning was unable to find a value for ' +
+                'swapout_threshold. Please specify it manually.')
+
+        if not self._is_swapin_sync():
+            if self._swapin_ahead == -1:
+                raise ValueError(
+                    'Auto-tuning was unable to find a value for ' +
+                    'swapin_ahead. Please specify it manually.')
+                
+            if self._swapin_groupby == -1:
+                raise ValueError(
+                    'Auto-tuning was unable to find a value for ' +
+                    'swapin_groupby. Please specify it manually.')
+
     def _search_params(self):
         def binary_search(sim, L, R, threshold, ahead, groupby, idx):
             params = {1: threshold, 2: ahead, 3: groupby}
             while L <= R:
                 m = floor((L+R)/2)
-                start_time = time.time()
                 old_value = params[idx]
                 params[idx] = m
                 passed = play_with_time(sim, params[1], params[2], params[3])
@@ -806,14 +821,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             return params[idx]
 
         def play_with_time(sim, *argv):
-            start_time = time.time()
             passed = sim.play(argv[0], argv[1], argv[2])
-            self._log_info("took: {} ms".format((time.time()-start_time)*1000))
             return passed
-
-        if (self._swapout_threshold >=0 and self._swapin_ahead >= 0
-            and self._swapin_groupby >= 0):
-            return
 
         self._log_info(
             "Searching values for swapout_threshold and swapin_ahead")
@@ -841,7 +850,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
 
         sim = Simulator(self, ratio=mem_ratio, debug_level=1,
                         plot=self._autotune_plot)
-        if (self._swapout_threshold < 0 and self._swapin_ahead < 0
+        if (self._swapout_threshold < 0
+            and self._swapin_ahead < 0
             and self._swapin_groupby < 0):
             # check if we really need LMS or not
             passed = play_with_time(sim, self._topo_sort.size, 1, 0)
@@ -863,6 +873,11 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             else:
                 self._sync_mode = 3
                 return
+
+        # if swapin synchronization is enabled, do not need to search for
+        # swapin_ahead and swapin_groupby
+        if self._is_swapin_sync():
+            return
 
         # binary search for ahead
         if (self._swapin_ahead < 0):
@@ -891,9 +906,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             else:
                 passed = True
             if passed:
-               self._swapin_groupby = binary_search(
-                   sim, 0, self._topo_sort.size, threshold, ahead, groupby, 3)
-               found_gr = True
+                self._swapin_groupby = binary_search(
+                    sim, 0, self._topo_sort.size, threshold, ahead, groupby, 3)
+                found_gr = True
             else:
                 self._sync_mode = 3
                 return
@@ -1101,6 +1116,12 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                         cop.name, self._get_level(cop),
                         op.name, self._get_level(op)),
                     1, offset)
+
+    def _is_swapin_sync(self):
+        return self._sync_mode in {2, 3}
+
+    def _is_swapout_sync(self):
+        return self._sync_mode in {1, 3}
 
     def _log_histogram(self):
         """Log a histogram of distances for edges emanated from `all_ops`.

@@ -57,6 +57,9 @@ class Simulator(object):
         self._get_earliest_op = self._lms._get_earliest_op
         self._groupby = self._lms._groupby
         self._batch_size = self._lms._batch_size
+        self._sync_mode = self._lms._sync_mode
+        self._is_swapin_sync = self._lms._is_swapin_sync
+        self._is_swapout_sync = self._lms._is_swapout_sync
 
         self._initialize()
 
@@ -86,16 +89,19 @@ class Simulator(object):
         self._used_mem = 0
         self._mem_traces = []
 
+    @ut.measure_time
     def play(self, threshold, ahead, groupby):
         """Check whether LMS works with parameters `threshold` and `ahead`.
 
         Return:
           True if successfully. Otherwise, False.
         """
-
         self._reset()
-        self._log_info("Simulating for threshold {}, ahead {}, groupby {}".format(
-            threshold, ahead, groupby), 0)
+        self._log_info("Simulating for " +
+                       "threshold {}".format(threshold) +
+                       ", ahead {}".format(ahead) +
+                       ", groupby {}".format(groupby) +
+                       ", sync_mode {}".format(self._sync_mode), 0)
 
         # keep tensors that were swapped output
         swapouts = set()
@@ -115,15 +121,16 @@ class Simulator(object):
 
             k_ops = self._get_ops_by_level(k)
             # allocate memory for swapin tensors
-            name_size_lifetimes = swapins[k] if k in swapins else set()
-            for nsl in name_size_lifetimes:
-                ts_name, ts_size, lifetime = nsl
-                self._log_info("[{}] swapped in {}".format(k, ts_name))
-                ok = self._allocate(ts_name, ts_size, lifetime)
-                if not ok:
-                    passed = False
-                    if not self._plot:
-                        return passed
+            if not self._is_swapin_sync():
+                name_size_lifetimes = swapins[k] if k in swapins else set()
+                for nsl in name_size_lifetimes:
+                    ts_name, ts_size, lifetime = nsl
+                    self._log_info("[{}] swapped in {}".format(k, ts_name))
+                    ok = self._allocate(ts_name, ts_size, lifetime)
+                    if not ok:
+                        passed = False
+                        if not self._plot:
+                            return passed
 
             for op in k_ops:
                 self._log_info("[{}] execute op {}".format(k, op.name))
@@ -140,13 +147,16 @@ class Simulator(object):
                     ts_name = ts.name
                     # whether this tensor was swapped in?
                     found, _ = self._is_swapin_tensor(ts_name, op_name)
-                    if found:
+                    if found and not self._is_swapin_sync():
                         continue
                     else:
                         if ts_name not in self._mem:
                             ts_size = self._ts_size(ts)
-                            ok = self._allocate(
-                                ts_name, ts_size, len(ts.consumers()))
+                            if self._is_swapin_sync():
+                                lifetime = 1
+                            else:
+                                lifetime = len(ts.consumers())
+                            ok = self._allocate(ts_name, ts_size, lifetime)
                             if not ok:
                                 passed = False
                                 if not self._plot:
@@ -197,7 +207,8 @@ class Simulator(object):
                         continue
                     # swapout tensors will be collected later
                     self._ref_counts[ts_name] -= len(dest_ops)
-                    self._ref_counts[ts_name] += self._swapout_delay
+                    if not self._is_swapout_sync():
+                        self._ref_counts[ts_name] += self._swapout_delay
                     swapouts.add(ts_name)
                     self._log_info("[{}] swapped out {}".format(k, ts_name))
                     # add swapin ops
@@ -208,7 +219,10 @@ class Simulator(object):
                         ts_info = (s, ts_size, len(dests))
                         # put the tensor into the swapins queue
                         dest = self._get_earliest_op(dests)
-                        sin_level = self._get_level(dest) - ahead
+                        if not self._is_swapin_sync():
+                            sin_level = self._get_level(dest) - ahead
+                        else:
+                            sin_level = self._get_level(dest)
                         if sin_level in swapins:
                             swapins[sin_level] |= {ts_info}
                         else:
@@ -287,7 +301,8 @@ class Simulator(object):
         plt.plot([m/(1e9) for m in self._mem_traces],
                  label="LMS(swapout_threshold: {}".format(threshold) +
                  ", swapin_ahead: {}".format(ahead) +
-                 ", swapin_groupby: {})".format(groupby))
+                 ", swapin_groupby: {})".format(groupby) +
+                 ", sync_mode: {})".format(self._sync_mode))
         plt.title("Simulation of memory consumption")
         plt.xlabel("Allocation/Deallocation steps")
         plt.ylabel("GigaBytes")
@@ -299,13 +314,13 @@ class Simulator(object):
                     "_swapout_threshold{}".format(threshold) +
                     "_swapin_ahead{}".format(ahead) +
                     "_swapin_groupby{}".format(groupby) +
+                    "_sync_mode{}".format(self._sync_mode) +
                     ".pdf",
                     format='pdf')
         plt.close()
 
     def _ts_size(self, ts):
         return ut.get_tensor_size(ts, self._batch_size)
-
 
     def _is_swapin_tensor(self, ts_name, op_name):
         """Check if the tensor is a swapin tensor or not.
@@ -321,3 +336,4 @@ class Simulator(object):
         else:
             self._lms._log_info(
                 "[Simulator] " + msg, self._debug_level, offset)
+

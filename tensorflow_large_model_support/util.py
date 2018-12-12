@@ -10,6 +10,8 @@
 # *****************************************************************
 """Utility functions for editing graph
 """
+import time
+from functools import wraps
 
 
 def fanins(op):
@@ -106,3 +108,15 @@ def get_tensor_size(ts, bs=None):
                 v = d
         s *= v
     return s*(ts.dtype.size)
+
+
+# decorators
+def measure_time(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        rt = f(*args, **kwargs)
+        args[0]._log_info(
+            "took: {} ms".format((time.time()-start_time)*1000), 0)
+        return rt
+    return wrapper
