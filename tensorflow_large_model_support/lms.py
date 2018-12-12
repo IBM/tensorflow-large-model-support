@@ -127,7 +127,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             'ResourceScatterMax', 'ResourceScatterUpdate',
             'ResourceScatterNdUpdate', 'ResourceScatterNdAdd',
             # data filling
-            'Fill', 'Range', 'RandomUniform'}
+            'Range', 'RandomUniform'}
 
         # a topological sort
         self._topo_sort = None
