@@ -66,14 +66,15 @@ class Simulator(object):
         with tf.Session() as sess:
             self._max_mem = sess.run(memory_stats_ops.BytesLimit())
         # exclude memories for variables
-        for op in self._graph.get_operations():
-            if 'Variable' in op.type:
-                if len(op.outputs) > 0:
-                    ts = op.outputs[0]
-                    var_size = self._ts_size(ts)
-                    self._max_mem -= var_size
+        learning_params_size = 0
+        for v in tf.trainable_variables():
+            var_size = self._ts_size(v)
+            self._max_mem -= var_size
+            learning_params_size += var_size
         # use only `ratio` percent of the available memory
         self._max_mem *= self._ratio
+        self._log_info("The model has {} MB of learning parameters".format(
+            learning_params_size/1000/1000), 0)
         self._log_info("Available memory for simulation: {}".format(
             self._max_mem), 0)
 
@@ -129,6 +130,11 @@ class Simulator(object):
                 in_tensors = set(op.inputs)
                 out_tensors = set(op.outputs)
                 op_name = op.name
+
+                # do not simulate ops relating to variables
+                if 'Variable' in op_name:
+                    continue
+
                 # allocate memory for inputs
                 for ts in in_tensors:
                     ts_name = ts.name
