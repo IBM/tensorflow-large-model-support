@@ -152,7 +152,10 @@ def main(_):
 
   # Enable Large Model Support
   from tensorflow_large_model_support import LMS
-  lms_model = LMS(swapout_threshold=50, swapin_ahead=3)
+  # This model does not require TFLMS to successfully run. If we do not
+  # specify specific tuning parameters to LMS, the auto tuning will determine
+  # that TFLMS is not needed and disable it.
+  lms_model = LMS(swapout_threshold=50, swapin_ahead=3, swapin_groupby=2)
   lms_model.excl_output_scopes = {'loss', 'accuracy', 'dropout'}
   lms_model.batch_size = 50
   lms_model.run(tf.get_default_graph())

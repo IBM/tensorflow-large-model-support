@@ -66,7 +66,10 @@ model.compile(loss=keras.losses.categorical_crossentropy,
               metrics=['accuracy'])
 
 # Keras callback for LMS
-lms_callback = LMS()
+# This model does not require TFLMS to successfully run. If we do not
+# specify specific tuning parameters to LMS, the auto tuning will determine
+# that TFLMS is not needed and disable it.
+lms_callback = LMS(swapout_threshold=40, swapin_ahead=3, swapin_groupby=2)
 
 model.fit(x_train, y_train,
           batch_size=batch_size,

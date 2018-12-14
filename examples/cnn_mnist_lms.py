@@ -151,7 +151,11 @@ def main(unused_argv):
 
   # Hook for Large Model Support
   from tensorflow_large_model_support import LMS
-  lms_hook = LMS(swapin_ahead=3, debug=True)
+  # This model does not require TFLMS to successfully run. If we do not
+  # specify specific tuning parameters to LMS, the auto tuning will determine
+  # that TFLMS is not needed and disable it.
+  lms_hook = LMS(swapout_threshold=50, swapin_ahead=3, swapin_groupby=2,
+                 debug=True)
 
   mnist_classifier.train(
       input_fn=train_input_fn,
