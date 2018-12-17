@@ -33,7 +33,7 @@
 #
 # Point in time test results:
 # Environment:
-#   IBM AC922 with NVIDIA Volta V100 GPUs
+#   IBM AC922 with NVIDIA Volta V100 GPUs containing 16GB of RAM
 #   TensorFlow 1.12
 #   NVIDIA CUDA 10.0.130
 #   NVIDIA cuDNN 7.3.1
