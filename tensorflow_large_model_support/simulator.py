@@ -138,6 +138,9 @@ class Simulator(object):
                 out_tensors = set(op.outputs)
                 op_name = op.name
 
+                if self._is_ignorable(op):
+                    continue
+
                 # do not simulate ops relating to variables
                 if 'Variable' in op_name:
                     continue
@@ -145,6 +148,9 @@ class Simulator(object):
                 # allocate memory for inputs
                 for ts in in_tensors:
                     ts_name = ts.name
+                    # whether this tensor was produced by an ignorable op
+                    if self._is_ignorable(ts.op):
+                        continue
                     # whether this tensor was swapped in?
                     found, _ = self._is_swapin_tensor(ts_name, op_name)
                     if found and not self._is_swapin_sync():
@@ -166,8 +172,12 @@ class Simulator(object):
                 for ts in out_tensors:
                     ts_name = ts.name
                     n_consumers = len(ts.consumers())
+                    for cop in ts.consumers():
+                        if self._is_ignorable(cop):
+                            n_consumers -= 1
                     if n_consumers == 0:
                         continue    # no ops consuming `ts`
+
                     ts_size = self._ts_size(ts)
                     ok = self._allocate(ts_name, ts_size, n_consumers)
                     if not ok:
@@ -177,6 +187,9 @@ class Simulator(object):
 
                 # simulate execution
                 for ts in in_tensors:
+                    # check if the tensor was produced by an ignorable op
+                    if self._is_ignorable(ts.op):
+                        continue
                     # check if the tensor is swapped in
                     ts_name = ts.name
                     _, s = self._is_swapin_tensor(ts_name, op_name)
@@ -198,10 +211,20 @@ class Simulator(object):
                     if ndims is None or ndims <= 1:
                         continue
                     ts_name = ts.name
+
+                    # Maybe all consumers are ignorable ops,
+                    # so there is no need to swap out this tensor
+                    if ts_name not in self._ref_counts:
+                        continue
+
                     ts_size = self._ts_size(ts)
+                    # filter by threshold
                     dest_ops = {dest
                                 for dest in ts.consumers()
                                 if self._distance(op, dest) > threshold}
+                    dest_ops = {dest
+                                for dest in dest_ops
+                                if self._is_ignorable(dest) is False}
                     dest_ops -= self._excl_dest_ops
                     if not dest_ops:
                         continue
@@ -229,7 +252,7 @@ class Simulator(object):
                             swapins[sin_level] = {ts_info}
 
             self._log_info("[{}] available memory {}".format(
-                k, self._get_free_mem))
+                k, self._get_free_mem()))
 
         if self._plot:
             self._generate_diagram(threshold, ahead, groupby)
@@ -321,6 +344,25 @@ class Simulator(object):
 
     def _ts_size(self, ts):
         return ut.get_tensor_size(ts, self._batch_size)
+
+    def _is_ignorable(self, op):
+        """Check if an operation is ignorable in simulator.
+        For example, operations used for inferencing only are
+        ignorable in simulation of training mode, and vice versa.
+        """
+        # TODO(@tung) can we automatically detect the learning mode?
+
+        """BatchNorm layer in Keras invokes a smart condition where
+        the True branch will invoke a FusedBatchNorm op whose property
+        `is_training` is True, and the False branch will invoke
+        a FusedBatchNorm op whose property `is_training` is False.
+        Here, we assume LMS is being used for training. So, we do not
+        simulate the False branch.
+        """
+        if op.type in {"FusedBatchNorm", "FusedBatchNormGrad"} \
+           and (op.get_attr("is_training") is False):
+            return True
+        return False
 
     def _is_swapin_tensor(self, ts_name, op_name):
         """Check if the tensor is a swapin tensor or not.
