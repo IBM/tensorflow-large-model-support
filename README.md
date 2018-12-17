@@ -100,6 +100,8 @@ lms_callback = LMSKerasCallback()
 ```python
 model.fit_generator(generator=training_gen, callbacks=[lms_callback])
 ```
+For a working example of LMS integration with Keras based training see:
+`examples/Keras_ResNet50.py`.
 
 ### Scaling tips
 
@@ -214,6 +216,14 @@ config = tf.ConfigProto()
 config.graph_options.rewrite_options.memory_optimization = \
 	rewriter_config_pb2.RewriterConfig.SCHEDULING_HEURISTICS
 ```
+
+### Example of TensorFlow Large Model Support with Large Data and Tuning
+
+The Keras model example `examples/Keras_ResNet50.py` allows the user to
+increase the input data size to cause out of memory situations and then
+easily experiment with TFLMS tuning options to train with larger data.
+See the comment header in the example for more information.
+
 
 ## Citations
 
