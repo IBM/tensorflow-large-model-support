@@ -17,10 +17,10 @@
 # This model uses the ResNet50 from keras_applications to demonstrate
 # how to enable TensorFlow Large Model Support (TFLMS) in a Keras model that
 # cannot fit in GPU memory when using larger resolution data. To simplify
-# the running of the model with with different higher resolution images,
+# the running of the model with different higher resolution images,
 # the code uses a random image generator to generate synthetic image data.
 #
-# This model allows provides a convenient way to test out the capabilities
+# This model provides a convenient way to test out the capabilities
 # of TFLMS. Command line parameters allow the user to change the size of
 # the input image data, enable or disable TFLMS, set TFLMS tunables,
 # and enable or disable CUDA profiling to ease collection of profile data.
@@ -41,6 +41,15 @@
 # Max resolution without TFLMS: 2300x2300
 # Max resolution with TFLMS: 3900x3900
 # This is a 2.88x resolution increase with TFLMS.
+#
+# Invocation examples:
+# Run without LMS:
+#   python Keras_ResNet50.py --image_size 2300
+# Run with LMS:
+#   python Keras_ResNet50.py --image_size 3900 --lms
+# Swap some, but not all tensors:
+#  python Keras_ResNet50.py --image_size 2400 --lms --n_tensors 20 --lb 30
+
 
 import argparse
 import tensorflow as tf
