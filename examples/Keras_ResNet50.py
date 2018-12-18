@@ -104,7 +104,9 @@ def get_callbacks(args):
     callbacks = []
 
     if args.nvprof:
-        callbacks.append(CudaProfileCallback(1, 4, 9))
+        callbacks.append(CudaProfileCallback(args.nvprof_epoch,
+                                             args.nvprof_start,
+                                             args.nvprof_stop))
 
     # Enable TFLMS
     if args.lms:
