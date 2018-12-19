@@ -67,6 +67,9 @@ For a working example of LMS integration with [tf.keras](https://www.tensorflow.
 `examples/mnist_cnn_keras.py`
 which is an LMS enabled version of `https://github.com/keras-team/keras/blob/master/examples/mnist_cnn.py`.
 
+An working example of LMS integration with Keras based training is:
+`examples/Keras_ResNet50.py`.
+
 
 ### Parameters for LMS
 _swapout_threshold_: the smaller `swapout_threshold` is, the more tensors are swapped out to the host memory. Default `-1` (auto mode).
@@ -95,6 +98,13 @@ lms.run(tf.get_default_graph())
 
 ### Performance Tuning LMS
 (To be added)
+
+### Example of TensorFlow Large Model Support with Large Data and Tuning
+
+The Keras model example `examples/Keras_ResNet50.py` allows the user to
+increase the input data size to cause out of memory situations and then
+easily experiment with TFLMS tuning options to train with larger data.
+See the comment header in the example for more information.
 
 ### TensorFlow and LMS
 
