@@ -49,8 +49,6 @@ class Simulator(object):
         self._graph = self._lms._graph
         self._topo_sort = self._lms._topo_sort
         self._lms_dir = self._lms._lms_dir
-        self._excl_src_ops = self._lms._excl_src_ops
-        self._excl_dest_ops = self._lms._excl_dest_ops
         self._distance = self._lms._distance
         self._get_level = self._lms._get_level
         self._get_ops_by_level = self._lms._get_ops_by_level
@@ -60,6 +58,9 @@ class Simulator(object):
         self._sync_mode = self._lms._sync_mode
         self._is_swapin_sync = self._lms._is_swapin_sync
         self._is_swapout_sync = self._lms._is_swapout_sync
+        self._filter_by_source_ops = self._lms._filter_by_source_ops
+        self._filter_by_dest_ops = self._lms._filter_by_dest_ops
+        self._filter_by_swapout_threshold = self._lms._filter_by_swapout_threshold
 
         self._initialize()
 
@@ -204,7 +205,7 @@ class Simulator(object):
                 self._gc()  # collect input and swapout tensors
 
                 # swap out tensors
-                if op in self._excl_src_ops:
+                if op not in self._filter_by_source_ops({op}):
                     continue
                 for ts in out_tensors:
                     ndims = ts.shape.ndims
@@ -219,13 +220,13 @@ class Simulator(object):
 
                     ts_size = self._ts_size(ts)
                     # filter by threshold
-                    dest_ops = {dest
-                                for dest in ts.consumers()
-                                if self._distance(op, dest) > threshold}
+                    dest_ops = self._filter_by_swapout_threshold(
+                        op, ts, set(), threshold)
                     dest_ops = {dest
                                 for dest in dest_ops
                                 if self._is_ignorable(dest) is False}
-                    dest_ops -= self._excl_dest_ops
+                    # filter by dest operations
+                    dest_ops = self._filter_by_dest_ops(dest_ops)
                     if not dest_ops:
                         continue
                     # swapout tensors will be collected later

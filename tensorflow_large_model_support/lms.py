@@ -393,11 +393,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         cand_ops = set(self._graph.get_operations())
 
         # filter by source operations
-        if self._incl_src_ops:
-            # if inclusive mode is enabled,
-            # only proceed included ops
-            cand_ops &= self._incl_src_ops
-        cand_ops -= self._excl_src_ops
+        cand_ops = self._filter_by_source_ops(cand_ops)
 
         for op in cand_ops:
             self._insert_swap_nodes(op)
@@ -517,15 +513,11 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             # filter by topological distance
             # candidates are ops whose distance to `src_op` is
             # greater than threshold
-            cands = set()
-            for op in ts.consumers():
-                if self._distance(src_op, op) > self._swapout_threshold:
-                    cands.add(op)
+            cands = self._filter_by_swapout_threshold(
+                src_op, ts, set(), self._swapout_threshold)
 
             # filter by dest operations
-            if self._incl_dest_ops:
-                cands &= self._incl_dest_ops
-            cands -= self._excl_dest_ops
+            cands = self._filter_by_dest_ops(cands)
 
             if cands:
                 ts_dests[ts] = cands
@@ -1020,6 +1012,28 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
           a set of `tf.Operation`
         """
         return self._topo_sort.get_ops(level).copy()
+
+    def _filter_by_source_ops(self, cand_ops):
+        if self._incl_src_ops:
+            # if inclusive mode is enabled,
+            # only proceed included ops
+            cand_ops &= self._incl_src_ops
+        cand_ops -= self._excl_src_ops
+        return cand_ops
+
+    def _filter_by_dest_ops(self, cand_ops):
+        if self._incl_dest_ops:
+            # if inclusive mode is enabled,
+            # only proceed included ops
+            cand_ops &= self._incl_dest_ops
+        cand_ops -= self._excl_dest_ops
+        return cand_ops
+
+    def _filter_by_swapout_threshold(self, src_op, ts, cand_ops, threshold):
+        for op in ts.consumers():
+            if self._distance(src_op, op) > threshold:
+                cand_ops.add(op)
+        return cand_ops
 
     def _log_info(self, message, level=0, offset=0):
         """Log debug information.
