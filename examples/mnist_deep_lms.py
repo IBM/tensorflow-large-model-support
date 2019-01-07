@@ -157,7 +157,6 @@ def main(_):
   # that TFLMS is not needed and disable it.
   lms_model = LMS(swapout_threshold=50, swapin_ahead=3, swapin_groupby=2)
   lms_model.excl_output_scopes = {'loss', 'accuracy', 'dropout'}
-  lms_model.batch_size = 50
   lms_model.run(tf.get_default_graph())
 
   graph_location = tempfile.mkdtemp()
