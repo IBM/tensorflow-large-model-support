@@ -86,12 +86,18 @@ _debug_ :: Debug mode for LMS. Default `False`.
 
 _debug_level_ :: Debug level for LMS (1 or 2). Default `1`.
 
-### AutoTune
-If parameters `swapout_threshold`, `swapin_ahead`, `swapin_groupby` are set to the default values, we will enable AutoTune to automatically find suitable values for them. However, if AutoTune does not have enough information to do auto-tuning, such as a lack of mini-batch size (since users use a Placeholder to feed data), it would raise an error and users should provide the mini-batch size for it as follows:
+### Auto tuning
+If parameters `swapout_threshold`, `swapin_ahead`, `swapin_groupby` are set to
+the default values, we will enable auto tuning to automatically find suitable
+values for them. Auto tuning requires the mini batch size to correctly
+calculate memory usage. Some models and some methods of invoking the model
+training do not allow LMS to know the batch size. When auto tuning cannot
+discover the batch size it will raise an error and the batch size should be
+specified manually as follows:
 
 ```python
 from tensorflow_large_model_support import LMS
-lms_callback = LMS()
+lms = LMS()
 lms.batch_size = 32
 lms.run(tf.get_default_graph())
 ```
@@ -106,8 +112,32 @@ increase the input data size to cause out of memory situations and then
 easily experiment with TFLMS tuning options to train with larger data.
 See the comment header in the example for more information.
 
-### TensorFlow and LMS
 
+### Using LMS with saved models
+Both TensorFlow and Keras have various ways to save models. Some of these
+methods save the model or graph definition and some methods save only the
+weights. Whether you need to enable large model support on the loaded model
+depends on several factors: if you are loading the model for further training
+or loading the model for further inferencing, as well as how the model was
+saved.
+
+If TensorFlow MetaGraphs or SavedModels are saved after LMS has added swapping
+nodes to the model, the loaded model will contain swapping nodes. If only the
+model weights are saved, and are restored onto a model that is built using
+code, then the model will only have LMS swapping nodes if LMS is re-run on the
+model.
+
+Keras models saved with `tf.keras.models.save_model` do not have LMS swapping
+nodes in them. If swapping is required in the loaded model, LMS should be
+passed to the load `tf.keras.models.load_model`
+API. For example:
+```python
+from tensorflow_large_model_support import LMS
+lms_callback = LMS()
+model = tf.keras.models.load_model(filepath, callbacks=[lms_callback])
+```
+
+### TensorFlow and LMS
 TensorFlow version >= 1.8 has a mechanism for memory optimization. Though the
 mechanism totally works well with this LMS module, it is recommended to switch
 its mode to `SCHEDULING_HEURISTICS` to allow training as large a model as
