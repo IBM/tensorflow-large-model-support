@@ -78,7 +78,7 @@ _swapin_ahead_: the larger `swapin_ahead` is, the earlier a tensor is swapped in
 
 _swapin_groupby_: multiple swap-in operations of the same tensor will be grouped or fused into one swap-in operation for better performance if they are *close* to each other (the distance betweem them is within `swapin_groupby`). Default `-1` (auto mode).
 
-_sync_mode_: whether do synchronization between data transfer and kernel computation or not. Four modes: `0` turn off. `1` sync for only swap-out operations. `2` sync for only swap-in operations. `3` sync for both swap-out and swap-in operations. Default `0`.
+_sync_mode_: whether to do synchronization between data transfer and kernel computation or not. Four modes: `0` turn off. `1` sync for only swap-out operations. `2` sync for only swap-in operations. `3` sync for both swap-out and swap-in operations. Default `0`.
 
 _serialization_: serialize operations at the same level in the topological sort. This option accepts a list of Python slicing string in which each slicing represents level indices in the topological sort. E.g. [1, '3:5', 7] means levels 1, 3, 4, 5 and 7 are serialized. Default `[]` (turn off).
 

@@ -56,11 +56,11 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             tensor. Default `-1` (auto mode).
           swapin_groupby: consuming operations whose distances among them are
             within `swapin_groupby` share the same swap-in operation.
-            Default `0`.
+            Default `-1` (auto mode).
           swapin_ahead: lower-bound value for LMS. A tensor will be swapped in
             during the backward phase at least `swapin_ahead` nodes before it
             in the graph. Default `-1` (auto mode).
-          sync_mode: whether do synchronization between data transfer and
+          sync_mode: whether to do synchronization between data transfer and
             kernel computation or not. Four modes: `0` turn off. `1` sync for
             only swap-out ops. `2` sync for only swap-in ops. `3` sync for both
             swap-out and swap-in ops. Default `0`.
@@ -791,7 +791,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 raise ValueError(
                     'Auto-tuning was unable to find a value for ' +
                     'swapin_ahead. Please specify it manually.')
-                
+
             if self._swapin_groupby == -1:
                 raise ValueError(
                     'Auto-tuning was unable to find a value for ' +
