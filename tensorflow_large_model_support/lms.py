@@ -415,6 +415,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             sin_dest = {(op[sin], op[dest]) for op in self._swap_ops}
             for sin, dest in sin_dest:
                 self._sync_swapin(sin, dest, sins)
+        else:
+            self._add_control_dependencies()
 
     def _sync_swapout(self, src, sout, souts):
         """TODO: write comment
