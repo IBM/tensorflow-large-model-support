@@ -102,11 +102,20 @@ class TOPOS(object):
         if xs is None:
             return set()
 
-        # do not serialize levels including ops in the "/cond/" scope.
+        """
+        Exclude the following ops:
+          - ops in the "/cond/" scope,
+          - ops in the "loss" scope,
+          - variables and,
+          - non-GPU ops.
+        """
         cond_ops = {op for op in xs
                     if ("/cond/" in op.name or
+                        "loss" in op.name or
+                        "Variable" in op.name or
                         (not ut.is_valid_op(op, self._is_training)))}
-        if len(cond_ops) > 0:
+        xs -= cond_ops
+        if len(xs) == 0:
             return set()
         else:
             pass

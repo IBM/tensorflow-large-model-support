@@ -275,7 +275,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._control_outputs = ut.build_control_outputs(self._graph)
 
         # build a topological sort
-        self._topo_sort = topos.TOPOS(self._graph)
+        self._topo_sort = topos.TOPOS(self._graph, self._is_training)
         self._topo_sort.build()
         self._log_info("Original categorized topological sort has {} levels".format(
             self._topo_sort.size))
