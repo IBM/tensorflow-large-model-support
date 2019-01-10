@@ -85,6 +85,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._debug = debug
         self._debug_level = debug_level
 
+        # True for training, False for inference
+        self._is_training = True
+
         # optional parameters
         self._excl_output_by_scopes = set()
         self._excl_output_by_types = set()
@@ -139,6 +142,14 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
 
         # a directory to store LMS-related information, such as logs.
         self._lms_dir = ".lms"
+
+    @property
+    def is_training(self):
+        return self._is_training
+
+    @is_training.setter
+    def is_training(self, val):
+        self._is_training = val
 
     @property
     def excl_output_by_scopes(self):
@@ -293,6 +304,15 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                         for op in self._get_ops_by_level(i)]), 1)
 
         # swapping tensors
+
+        # add some special scopes to exclusive scopes
+        excl_names = set()
+        for op in graph.get_operations():
+            if not self._is_valid_op(op):
+                excl_names.add(op.name)
+        self.excl_input_by_scopes |= excl_names
+        self.excl_output_by_scopes |= excl_names
+
         # inclusive source ops
         self._incl_src_ops = self._filter_scopes_and_types(
             all_ops, self._incl_output_by_scopes, self._incl_output_by_types)
@@ -406,15 +426,15 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         if self._is_swapout_sync():
             souts = {op[sout] for op in self._swap_ops}
             src_sout = {(op[src], op[sout]) for op in self._swap_ops}
-            for src, sout in src_sout:
-                self._sync_swapout(src, sout, souts)
+            for op_src, sout in src_sout:
+                self._sync_swapout(op_src, sout, souts)
 
         # sync for swap-in ops
         if self._is_swapin_sync():
             sins = {op[sin] for op in self._swap_ops}
-            sin_dest = {(op[sin], op[dest]) for op in self._swap_ops}
-            for sin, dest in sin_dest:
-                self._sync_swapin(sin, dest, sins)
+            sin_dest = {(op[src], op[sin], op[dest]) for op in self._swap_ops}
+            for op_src, sin, dest in sin_dest:
+                self._sync_swapin(op_src, sin, dest, sins)
         else:
             self._add_control_dependencies()
 
@@ -439,7 +459,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         for op in fs:
             self._add_control_inputs(op, sout)
 
-    def _sync_swapin(self, sin, dest, sins):
+    def _sync_swapin(self, src, sin, dest, sins):
         """TODO: write comment
         """
         self._log_info("Do synchronization for the swap-in " +
@@ -449,7 +469,12 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         fs -= sins  # self-loop and cycles among swap-ins
         fs -= (set(sin.control_inputs) | ut.fanins(sin))  # avoid duplication
         fs -= (ut.fanouts(sin) | self._get_control_outputs(sin))  # cycles
-        self._add_control_inputs(sin, fs)
+        fs = {op for op in fs if self._is_valid_op(op)}
+        if len(fs) > 0:
+            self._add_control_inputs(sin, fs)
+        else:
+            # sync failed, do async
+            self._add_control_dependency(src, dest, sin, 1)
 
     def _groupby(self, ops, limit=5):
         """Group `ops` into groups so that topological distance between
@@ -732,7 +757,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 "{}.".format(swapin_op.name), 1)
             # do synchronization
             swapins = {op[2] for op in self._swap_ops}
-            self._sync_swapin(swapin_op, dest_op, swapins)
+            self._sync_swapin(src_op, swapin_op, dest_op, swapins)
 
     def _search_by_level(self, src_op, dest_op, distance):
         """Find a control dependency operation using topological sort.
@@ -1175,6 +1200,16 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         """
         return self._get_level(op2) - self._get_level(op1)
 
+    def _is_valid_op(self, op):
+        cands = {"FusedBatchNorm", "FusedBatchNormGrad"}
+        if op.type not in cands:
+            return True
+        else:
+            if op.get_attr("is_training") is self._is_training:
+                return True
+            else:
+                return False
+            
     def _get_earliest_op(self, ops):
         min = self._topo_sort.size
         rop = None
