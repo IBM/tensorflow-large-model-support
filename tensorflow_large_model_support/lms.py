@@ -351,13 +351,25 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 self._sync_ops()
 
         # print log information
-        n_swapout_ops = len({op[1] for op in self._swap_ops})
-        n_swapin_ops = len({op[2] for op in self._swap_ops})
+        swapout_ops = {op[1] for op in self._swap_ops}
+        swapin_ops = {op[2] for op in self._swap_ops}
+        n_swapout_ops = len(swapout_ops)
+        n_swapin_ops = len(swapin_ops)
+        swapout_size, swapin_size = 0, 0
+        for op in swapin_ops:
+            for ts in op.inputs:
+                swapin_size += ut.get_tensor_size(ts)
+        for op in swapout_ops:
+            for ts in op.outputs:
+                swapout_size += ut.get_tensor_size(ts)
+
         self._log_info(
             "Added {} operations to the model".format(
                 n_swapout_ops + n_swapin_ops) +
-            " ({} swap-out operations and {} swap-in operations)".format(
-                n_swapout_ops, n_swapin_ops))
+            " ({} swap-out operations ({} GiB) and ".format(
+                n_swapout_ops, round(swapout_size/1024/1024/1024, 2)) +
+            " {} swap-in operations ({} GiB))".format(
+                n_swapin_ops, round(swapin_size/1024/1024/1024, 2)))
         self._log_info("Editing model for LMS, took: {} ms".format(
             (time.time()-start_time)*1000))
 
