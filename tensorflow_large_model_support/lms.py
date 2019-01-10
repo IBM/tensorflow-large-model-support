@@ -253,16 +253,17 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
 
         self._version = self._graph.version
 
+        if self._is_lms_model():
+            self._log_info('This model has already been updated with LMS '
+                           'swap operations. LMS will not re-process it.')
+            return
+
         self._log_info("Editing model for LMS")
         start_time = time.time()
 
         all_ops = self._graph.get_operations()
         n_edges = 0
         for op in all_ops:
-            if 'lms/swap' in op.name:
-                self._log_info('This model has already been updated with LMS '
-                               'swap operations. LMS will not re-process it.')
-                return
             for op1 in ut.fanouts(op):
                 n_edges += 1
         self._log_info(
@@ -1214,6 +1215,16 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         """
         return ut.is_valid_op(op, is_training=self._is_training)
 
+    def _is_lms_model(self, graph=None):
+        """Check if the current model was modified for LMS or not.
+        """
+        if graph is None:
+            graph = self._graph
+        for op in graph.get_operations():
+            if 'lms/swap' in op.name:
+                return True
+        return False
+
     def _get_earliest_op(self, ops):
         min = self._topo_sort.size
         rop = None
@@ -1245,7 +1256,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 "parameter or set values for swapout_threshold, "
                 "swapin_ahead and swapin_groupby manually.")
         else:
-            self.run(tf.get_default_graph())
+            if not self._is_lms_model(tf.get_default_graph()):
+                self.run(tf.get_default_graph())
 
     # Implementation of `set_model` from from tf.keras.callbacks.Callback
     def set_model(self, model):
@@ -1264,4 +1276,5 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                    'is received during a call to model.fit() on a new model.')
             tf.logging.warning(msg)
         else:
-            self.run(tf.get_default_graph())
+            if not self._is_lms_model(tf.get_default_graph()):
+                self.run(tf.get_default_graph())
