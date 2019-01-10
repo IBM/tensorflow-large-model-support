@@ -113,9 +113,9 @@ class TOPOS(object):
                     if ("/cond/" in op.name or
                         "loss" in op.name or
                         "Variable" in op.name or
+                        op.type in {"Fill"} or  # TODO: a better way?
                         (not ut.is_valid_op(op, self._is_training)))}
-        xs -= cond_ops
-        if len(xs) == 0:
+        if len(cond_ops) > 0:
             return set()
         else:
             pass
