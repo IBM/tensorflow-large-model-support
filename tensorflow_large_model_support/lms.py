@@ -328,12 +328,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             all_ops, self._excl_input_by_scopes,
             self._excl_input_by_types | self._unused_types | self._variable_ops)
 
-        # estimate LMS parameters (threshold, ahead, groupby) in auto mode
-        if (self._swapout_threshold >= 0
-            and self._swapin_ahead >= 0
-            and self._swapin_groupby >= 0):
-            pass
-        else:
+        if self._autotune_enabled():
             self._search_params()
             if self._swapout_threshold == self._topo_sort.size:
                 self._log_info("LMS is not necessary. Turned LMS off.")
@@ -364,6 +359,26 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 n_swapout_ops, n_swapin_ops))
         self._log_info("Editing model for LMS, took: {} ms".format(
             (time.time()-start_time)*1000))
+
+    def _autotune_enabled(self):
+        if (self._swapout_threshold < 0
+            or self._swapin_ahead < 0
+            or self._swapin_groupby < 0):
+            return True
+        return False
+
+    def _model_has_placeholder_inputs(self, graph):
+        placeholders = {
+            op for op in graph.get_operations()
+            if op.type in {'Placeholder', 'PlaceholderWithDefault'}
+        }
+        for op in placeholders:
+            for ts in op.outputs:
+                if ts.shape.ndims is not None and ts.shape.ndims > 0:
+                    if ts.shape[0].value is None:
+                        return True
+        return False
+
 
     def _force_variable_initialization(self, vars):
         """
@@ -847,25 +862,15 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             "Searching values for swapout_threshold and swapin_ahead")
         mem_ratio = float(os.getenv('TF_LMS_SIMULATOR_MEM_RATIO', 0.9))
 
-        if self._batch_size is None:
-            found = False
-            placeholders = {
-                op for op in self._graph.get_operations()
-                if op.type in {'Placeholder', 'PlaceholderWithDefault'}
-            }
-            for op in placeholders:
-                for ts in op.outputs:
-                    if ts.shape.ndims is not None and ts.shape.ndims > 0:
-                        if ts.shape[0].value is None:
-                            found = True
-            if found:
-                raise ValueError(
-                    "It seems you are feeding data via placeholders. " +
-                    "LMS has not enough information to tune parameters " +
-                    "automatically. Please set values for swapout_threshold, " +
-                    "swapin_ahead and swapin_groupby manually, " +
-                    "or input the mini-batch size you are using " +
-                    "to LMS so that LMS can tune parameters automatically.")
+        if (self._batch_size is None and
+            self._model_has_placeholder_inputs(self._graph)):
+            raise ValueError(
+                "It seems you are feeding data via placeholders. "
+                "LMS does not have enough information to auto tune parameters "
+                "automatically. Please set the mini-batch size on the "
+                "batch_size property of the LMS instance so LMS can tune "
+                "parameters automatically or set values for swapout_threshold, "
+                "swapin_ahead and swapin_groupby manually.")
 
         sim = Simulator(self, ratio=mem_ratio, debug_level=1,
                         plot=self._autotune_plot)
@@ -1232,4 +1237,32 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self.params = params
         if params.get('batch_size'):
             self._batch_size = self.params['batch_size']
-        self.run(tf.get_default_graph())
+        if (self._autotune_enabled() and not self.batch_size and
+                self._model_has_placeholder_inputs(tf.get_default_graph())):
+            raise ValueError(
+                "TensorFlow Large Model Support (TFLMS) auto tuning is "
+                "enabled and the training batch size has not been set on "
+                "the LMS instance. Please set the batch_size "
+                "parameter or set values for swapout_threshold, "
+                "swapin_ahead and swapin_groupby manually.")
+        else:
+            self.run(tf.get_default_graph())
+
+    # Implementation of `set_model` from from tf.keras.callbacks.Callback
+    def set_model(self, model):
+        if (self._autotune_enabled() and not self.batch_size and
+                self._model_has_placeholder_inputs(tf.get_default_graph())):
+            # Here log a warning rather than error out because in the fit
+            # and fit_generator paths, set_model is called before set_params,
+            # and set_params will set the batch_size property when called
+            # by model.fit().
+            msg = ('TensorFlow Large Model Support (TFLMS) auto tuning is '
+                   'enabled and the training batch size has not been set on '
+                   'the LMS instance. If this message is received during a '
+                   'call to load_model, the use of the loaded model for '
+                   'prediction, evaluation, or further training may result in '
+                   'out of memory errors. This message can be ignored if it '
+                   'is received during a call to model.fit() on a new model.')
+            tf.logging.warning(msg)
+        else:
+            self.run(tf.get_default_graph())
