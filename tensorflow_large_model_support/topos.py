@@ -104,8 +104,8 @@ class TOPOS(object):
 
         # do not serialize levels including ops in the "/cond/" scope.
         cond_ops = {op for op in xs
-                    if ("/cond/" in op.name and
-                        ut.is_valid_op(op, self._is_training))}
+                    if ("/cond/" in op.name or
+                        (not ut.is_valid_op(op, self._is_training)))}
         if len(cond_ops) > 0:
             return set()
         else:

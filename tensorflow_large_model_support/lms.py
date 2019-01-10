@@ -812,7 +812,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             candidates = {
                 op
                 for op in candidates
-                if (("/cond/" not in op.name) and self._is_valid_op(op))
+                if (("/cond/" not in op.name) or self._is_valid_op(op))
             }
             
             if candidates:
