@@ -89,6 +89,9 @@ For a working example of LMS integration with Estimator based training see:
 which is an LMS enabled version of `https://github.com/tensorflow/tensorflow/blob/master/tensorflow/examples/tutorials/layers/cnn_mnist.py`.
 
 ### [tf.keras](https://www.tensorflow.org/api_docs/python/tf/keras)-based training
+
+**NOTE:** The use of the LMSKerasCallback requires TensorFlow 1.12 or later.
+
 #### Step 1: Define a LMSKerasCallback.
 ```python
 from tensorflow_large_model_support import LMSKerasCallback
