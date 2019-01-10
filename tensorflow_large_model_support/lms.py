@@ -300,7 +300,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         if self._debug and self._debug_level >= 1:
             for i in range(0, self._topo_sort.size):
                 self._log_info("[{}]: {}".format(
-                    i, [(op.name, op.type)
+                    i, [(op.name, op.type, op.device)
                         for op in self._get_ops_by_level(i)]), 1)
 
         # swapping tensors
@@ -471,6 +471,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             if sout in ut.fanins(op):
                 fs.remove(op)
 
+        # ops need to be valid
+        fs = {op for op in fs if self._is_valid_op(op)}
         for op in fs:
             self._add_control_inputs(op, sout)
 
@@ -484,7 +486,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         fs -= sins  # self-loop and cycles among swap-ins
         fs -= (set(sin.control_inputs) | ut.fanins(sin))  # avoid duplication
         fs -= (ut.fanouts(sin) | self._get_control_outputs(sin))  # cycles
-        fs = {op for op in fs if self._is_valid_op(op)}
+        fs = {op for op in fs if self._is_valid_op(op)}  # ops need to be valid
         if len(fs) > 0:
             self._add_control_inputs(sin, fs)
         else:
@@ -805,12 +807,13 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 for op in candidates
                 if self._is_reachable(op, dest_op, False)
             }
-            # not in a condition scope
+            # ops must be not in a condition scope and be valid
             candidates = {
                 op
                 for op in candidates
-                if "/cond/" not in op.name
+                if (("/cond/" not in op.name) and self._is_valid_op(op))
             }
+            
             if candidates:
                 result_ops |= candidates
                 ctrld_level = i
@@ -1206,15 +1209,11 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         return self._get_level(op2) - self._get_level(op1)
 
     def _is_valid_op(self, op):
-        cands = {"FusedBatchNorm", "FusedBatchNormGrad"}
-        if op.type not in cands:
-            return True
-        else:
-            if op.get_attr("is_training") is self._is_training:
-                return True
-            else:
-                return False
-            
+        """Valid ops are ops that would consume GPU memory in a given learning mode.
+        Hence, TFLMS deals with these ops only.
+        """
+        return ut.is_valid_op(op, is_training=self._is_training)
+
     def _get_earliest_op(self, ops):
         min = self._topo_sort.size
         rop = None

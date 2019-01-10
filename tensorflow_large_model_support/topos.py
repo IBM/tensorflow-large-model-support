@@ -17,7 +17,7 @@ from tensorflow_large_model_support import util as ut
 class TOPOS(object):
     """TOPOS class builds a topological sort from the computational graph.
     """
-    def __init__(self, graph):
+    def __init__(self, graph, is_training=True):
         """Create a TOPOS object.
 
         Args:
@@ -26,6 +26,7 @@ class TOPOS(object):
         self._graph = graph
         self._topo_sort = []
         self._levels = {}
+        self._is_training = is_training
 
     def build(self, graph=None):
         """Build a categorized topological sort
@@ -102,7 +103,9 @@ class TOPOS(object):
             return set()
 
         # do not serialize levels including ops in the "/cond/" scope.
-        cond_ops = {op for op in xs if "/cond/" in op.name}
+        cond_ops = {op for op in xs
+                    if ("/cond/" in op.name and
+                        ut.is_valid_op(op, self._is_training))}
         if len(cond_ops) > 0:
             return set()
         else:

@@ -67,6 +67,23 @@ def add_control_inputs(op, cops):
         op._add_control_inputs(cops)  # pylint: disable=protected-access
 
 
+def is_valid_op(op, is_training=True):
+    """Valid ops are ops that would consume GPU memory in a given learning mode.
+    Hence, TFLMS deals with these ops only.
+    """
+    if "CPU" in op.device.upper():
+        return False
+
+    cands = {"FusedBatchNorm", "FusedBatchNormGrad"}
+    if op.type not in cands:
+        return True
+    else:
+        if op.get_attr("is_training") == is_training:
+            return True
+        else:
+            return False
+            
+
 def build_control_outputs(graph):
     """Build a dictionary of (op, control_outputs).
     """

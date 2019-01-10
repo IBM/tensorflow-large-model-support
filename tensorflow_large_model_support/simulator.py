@@ -23,6 +23,7 @@ from tensorflow_large_model_support import util as ut
 class Simulator(object):
     """A simulator to simulate how LMS works.
     It is used to predict whether LMS works with given LMS parameters.
+    Operations that do not consume GPU memory will be ignored.
     """
     def __init__(self, lms, ratio=0.9, swapout_delay=1, debug_level=1,
                  plot=False):
@@ -45,22 +46,25 @@ class Simulator(object):
         # each tensor has a ref_count showing how many ops will consume it
         self._ref_counts = {}
 
-        # aliases
+        # aliases, variables
         self._graph = self._lms._graph
+        self._sync_mode = self._lms._sync_mode
         self._topo_sort = self._lms._topo_sort
         self._lms_dir = self._lms._lms_dir
         self._distance = self._lms._distance
+        self._batch_size = self._lms._batch_size
+
+        # aliases, methods
+        self._groupby = self._lms._groupby
         self._get_level = self._lms._get_level
         self._get_ops_by_level = self._lms._get_ops_by_level
         self._get_earliest_op = self._lms._get_earliest_op
-        self._groupby = self._lms._groupby
-        self._batch_size = self._lms._batch_size
-        self._sync_mode = self._lms._sync_mode
         self._is_swapin_sync = self._lms._is_swapin_sync
         self._is_swapout_sync = self._lms._is_swapout_sync
         self._filter_by_source_ops = self._lms._filter_by_source_ops
         self._filter_by_dest_ops = self._lms._filter_by_dest_ops
         self._filter_by_swapout_threshold = self._lms._filter_by_swapout_threshold
+        self._is_valid_op = self._lms._is_valid_op
 
         self._initialize()
 
@@ -139,7 +143,7 @@ class Simulator(object):
                 out_tensors = set(op.outputs)
                 op_name = op.name
 
-                if self._is_ignorable(op):
+                if not self._is_valid_op(op):
                     continue
 
                 # do not simulate ops relating to variables
@@ -150,7 +154,7 @@ class Simulator(object):
                 for ts in in_tensors:
                     ts_name = ts.name
                     # whether this tensor was produced by an ignorable op
-                    if self._is_ignorable(ts.op):
+                    if not self._is_valid_op(ts.op):
                         continue
                     # whether this tensor was swapped in?
                     found, _ = self._is_swapin_tensor(ts_name, op_name)
@@ -174,7 +178,7 @@ class Simulator(object):
                     ts_name = ts.name
                     n_consumers = len(ts.consumers())
                     for cop in ts.consumers():
-                        if self._is_ignorable(cop):
+                        if not self._is_valid_op(cop):
                             n_consumers -= 1
                     if n_consumers == 0:
                         continue    # no ops consuming `ts`
@@ -189,7 +193,7 @@ class Simulator(object):
                 # simulate execution
                 for ts in in_tensors:
                     # check if the tensor was produced by an ignorable op
-                    if self._is_ignorable(ts.op):
+                    if not self._is_valid_op(ts.op):
                         continue
                     # check if the tensor is swapped in
                     ts_name = ts.name
@@ -224,7 +228,7 @@ class Simulator(object):
                         op, ts, set(), threshold)
                     dest_ops = {dest
                                 for dest in dest_ops
-                                if self._is_ignorable(dest) is False}
+                                if self._is_valid_op(dest)}
                     # filter by dest operations
                     dest_ops = self._filter_by_dest_ops(dest_ops)
                     if not dest_ops:
@@ -239,7 +243,7 @@ class Simulator(object):
                     dests_grp = self._groupby(dest_ops, groupby)
                     for dests in dests_grp:
                         # create a new tensor to simulate swapin
-                        s = ts_name + "_" + "_".join(x.name for x in dests)
+                        s = self._create_swapin_name(ts, dests)
                         ts_info = (s, ts_size, len(dests))
                         # put the tensor into the swapins queue
                         dest = self._get_earliest_op(dests)
@@ -346,24 +350,11 @@ class Simulator(object):
     def _ts_size(self, ts):
         return ut.get_tensor_size(ts, self._batch_size)
 
-    def _is_ignorable(self, op):
-        """Check if an operation is ignorable in simulator.
-        For example, operations used for inferencing only are
-        ignorable in simulation of training mode, and vice versa.
+    def _create_swapin_name(self, ts, dests):
+        """Create a name for a swap-in tensor.
         """
-        # TODO(@tung) can we automatically detect the learning mode?
-
-        """BatchNorm layer in Keras invokes a smart condition where
-        the True branch will invoke a FusedBatchNorm op whose property
-        `is_training` is True, and the False branch will invoke
-        a FusedBatchNorm op whose property `is_training` is False.
-        Here, we assume LMS is being used for training. So, we do not
-        simulate the False branch.
-        """
-        if op.type in {"FusedBatchNorm", "FusedBatchNormGrad"} \
-           and (op.get_attr("is_training") is False):
-            return True
-        return False
+        s = ts.name + "_" + "_".join(x.name for x in dests)
+        return s
 
     def _is_swapin_tensor(self, ts_name, op_name):
         """Check if the tensor is a swapin tensor or not.
