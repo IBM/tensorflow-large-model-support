@@ -262,14 +262,28 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         start_time = time.time()
 
         all_ops = self._graph.get_operations()
+        max_op, max_op_size = None, 0
         n_edges = 0
         for op in all_ops:
+            if self._is_valid_op(op):
+                op_size = 0
+                for ts in op.inputs:
+                    op_size += ut.get_tensor_size(ts)
+                for ts in op.outputs:
+                    op_size += ut.get_tensor_size(ts)
+                if op_size > max_op_size:
+                    max_op_size = op_size
+                    max_op = op
             for op1 in ut.fanouts(op):
                 n_edges += 1
         self._log_info(
             "The graph has {} vertices and {} edges.".format(
                 len(all_ops), n_edges)
         )
+        if max_op is not None:
+            self._log_info(
+                "The largest operation is {}".format(max_op.name) +
+                " consuming {} GiB".format(round(max_op_size/1024/1024/1024, 2)))
 
         # build a control output topology
         self._control_outputs = ut.build_control_outputs(self._graph)
