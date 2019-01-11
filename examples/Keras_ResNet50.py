@@ -97,9 +97,14 @@ def get_callbacks(args):
     if args.lms:
         # Specifying this starting name, from previous runs of LMS,
         # speeds up graph analysis time.
+        serialization = []
+        if args.serialization > 0:
+            serialization.append('%s:' % args.serialization)
         lms = LMS(swapout_threshold=args.swapout_threshold,
                   swapin_groupby=args.swapin_groupby,
-                  swapin_ahead=args.swapin_ahead)
+                  swapin_ahead=args.swapin_ahead,
+                  sync_mode=args.sync_mode,
+                  serialization=serialization)
         lms.batch_size = 1
         callbacks.append(lms)
 
@@ -153,7 +158,16 @@ if __name__ == "__main__":
                         help='The TFLMS swapin_ahead parameter. See the '
                              'TFLMS documentation for more information. '
                              'Default `-1` (auto mode).')
-
+    parser.add_argument("--serialization", type=int, default=-1,
+                        help='The layer to start serialization on. This '
+                             'number will be passed to the LMS serialization '
+                             'parameter as the start of a slice like this: '
+                             '[\'parameter:\']. See the TFLMS documentation '
+                             'for more information. Default -1, no '
+                             'serialization.')
+    parser.add_argument("--sync_mode", type=int, default=0,
+                        help='Sync mode of TFLMS. See the TFLMS documentation '
+                             'for more information')
     # nvprof parameters
     nvprof_group = parser.add_mutually_exclusive_group(required=False)
     nvprof_group.add_argument('--nvprof', dest='nvprof', action='store_true',
