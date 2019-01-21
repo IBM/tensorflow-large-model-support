@@ -11,7 +11,7 @@ TensorFlow Large Model Support, run the following commands to clone this reposit
 and install the module:
 ```sh
 git clone https://github.com/IBM/tensorflow-large-model-support.git
-pip install tensorflow_large_model_support
+pip install ./tensorflow-large-model-support
 ```
 
 ## How to use
