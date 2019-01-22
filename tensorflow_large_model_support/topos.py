@@ -17,7 +17,7 @@ from tensorflow_large_model_support import util as ut
 class TOPOS(object):
     """TOPOS class builds a topological sort from the computational graph.
     """
-    def __init__(self, graph, is_training=True):
+    def __init__(self, graph):
         """Create a TOPOS object.
 
         Args:
@@ -26,7 +26,6 @@ class TOPOS(object):
         self._graph = graph
         self._topo_sort = []
         self._levels = {}
-        self._is_training = is_training
 
     def build(self, graph=None):
         """Build a categorized topological sort
@@ -61,7 +60,7 @@ class TOPOS(object):
         self._topo_sort = []
         self._levels = {}
 
-    def serialize_for(self, levels, min=1):
+    def serialize_for(self, levels, min=1, excl_ops=set()):
         """Serialize ops for multiple levels in the topological sort
 
         Args:
@@ -88,14 +87,14 @@ class TOPOS(object):
         for i in indices:
             if (not prev_ops) and (prev_level + 1 == i):
                 prev_ops = set()
-            prev_ops = self._serialize_at(i, prev_ops)
+            prev_ops = self._serialize_at(i, prev_ops, excl_ops)
             prev_level = i
 
         # rebuild the topo sort
         self.reset()
         self.build()
 
-    def _serialize_at(self, level, prev_ops, rebuild=False):
+    def _serialize_at(self, level, prev_ops, excl_ops=set(), rebuild=False):
         """Serialize ops at the same level in the topological sort
         """
         xs = self.get_ops(level)
@@ -107,14 +106,13 @@ class TOPOS(object):
           - ops in the "/cond/" scope,
           - ops in the "loss" scope,
           - variables and,
-          - non-GPU ops.
+          - user-defined exclusive ops.
         """
         cond_ops = {op for op in xs
                     if ("/cond/" in op.name or
                         "loss" in op.name or
                         "Variable" in op.name or
-                        op.type in {"Fill"} or  # TODO: a better way?
-                        (not ut.is_valid_op(op, self._is_training)))}
+                        op in excl_ops)}
         if len(cond_ops) > 0:
             return set()
         else:

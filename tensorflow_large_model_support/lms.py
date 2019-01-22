@@ -88,6 +88,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         # True for training, False for inference
         self._is_training = True
 
+        # Keras model or not
+        self._is_keras = False
+
         # optional parameters
         self._excl_output_by_scopes = set()
         self._excl_output_by_types = set()
@@ -97,6 +100,11 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._incl_output_by_types = set()
         self._incl_input_by_scopes = set()
         self._incl_input_by_types = set()
+
+        # Keep CPU ops and ops that are inactive in a given learning mode.
+        # Never use these ops as a control op. Otherwise, some computations
+        # will be ignored.
+        self._inactive_ops = None
 
         # AutoTune
         self._batch_size = None
@@ -231,7 +239,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
     def autotune_plot(self, val):
         self._autotune_plot = val
 
-    def run(self, graph):
+    def run(self, graph, keras=False):
         """Edit the graph by adding swapin and swapout ops.
 
         Swapin and swapout ops are in the host.
@@ -250,7 +258,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             raise ValueError('The dataflow graph is required but has not been'
                              ' provided.')
         self._graph = graph
-
+        self._is_keras = keras
         self._version = self._graph.version
 
         if self._is_lms_model():
@@ -261,16 +269,27 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._log_info("Editing model for LMS")
         start_time = time.time()
 
+        # find inactive ops
+        self._inactive_ops = self._search_for_inactive_ops(
+            self._graph, self._is_training, self._is_keras)
+
         all_ops = self._graph.get_operations()
+
+        # the size of learning parameters
+        learning_params_size = 0
+        for v in tf.trainable_variables():
+            learning_params_size += ut.get_tensor_size(v, self._batch_size)
+        
+        # find the largest operation
         max_op, max_op_size = None, 0
         n_edges = 0
         for op in all_ops:
             if self._is_valid_op(op):
                 op_size = 0
                 for ts in op.inputs:
-                    op_size += ut.get_tensor_size(ts)
+                    op_size += ut.get_tensor_size(ts, self._batch_size)
                 for ts in op.outputs:
-                    op_size += ut.get_tensor_size(ts)
+                    op_size += ut.get_tensor_size(ts, self._batch_size)
                 if op_size > max_op_size:
                     max_op_size = op_size
                     max_op = op
@@ -280,6 +299,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             "The graph has {} vertices and {} edges.".format(
                 len(all_ops), n_edges)
         )
+        self._log_info("The graph has {} MiB of learning parameters".format(
+            round(learning_params_size/1024/1024, 2)), 0)
         if max_op is not None:
             self._log_info(
                 "The largest operation is {}".format(max_op.name) +
@@ -289,7 +310,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._control_outputs = ut.build_control_outputs(self._graph)
 
         # build a topological sort
-        self._topo_sort = topos.TOPOS(self._graph, self._is_training)
+        self._topo_sort = topos.TOPOS(self._graph)
         self._topo_sort.build()
         self._log_info("Original categorized topological sort has {} levels".format(
             self._topo_sort.size))
@@ -307,7 +328,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 m = max({self._get_level(op) for op in init_ops})
             self._log_info("Serialize the topological sort for levels: " +
                            "{}".format(self._serialization), offset=2)
-            self._topo_sort.serialize_for(self._serialization, min=m)
+            self._topo_sort.serialize_for(
+                self._serialization, min=m, excl_ops=self._inactive_ops)
             self._log_info("New categorized topological sort has {} levels".format(
                 self._topo_sort.size), offset=2)
             self._rebuild_control_outputs(True)  # force rebuilding
@@ -319,14 +341,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                         for op in self._get_ops_by_level(i)]), 1)
 
         # swapping tensors
-
-        # add some special scopes to exclusive scopes
-        excl_names = set()
-        for op in graph.get_operations():
-            if not self._is_valid_op(op):
-                excl_names.add(op.name)
-        self.excl_input_by_scopes |= excl_names
-        self.excl_output_by_scopes |= excl_names
+        # exclude cpu ops
+        cpu_ops = {op for op in all_ops if ut.is_cpu_op(op)}
 
         # inclusive source ops
         self._incl_src_ops = self._filter_scopes_and_types(
@@ -338,10 +354,12 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._excl_src_ops = self._filter_scopes_and_types(
             all_ops, self._excl_output_by_scopes,
             self._excl_output_by_types | self._unused_types | self._variable_ops)
+        self._excl_src_ops |= cpu_ops
         # exclusive dest ops
         self._excl_dest_ops = self._filter_scopes_and_types(
             all_ops, self._excl_input_by_scopes,
             self._excl_input_by_types | self._unused_types | self._variable_ops)
+        self._excl_dest_ops |= cpu_ops
 
         if self._autotune_enabled():
             self._search_params()
@@ -372,10 +390,10 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         swapout_size, swapin_size = 0, 0
         for op in swapin_ops:
             for ts in op.inputs:
-                swapin_size += ut.get_tensor_size(ts)
+                swapin_size += ut.get_tensor_size(ts, self._batch_size)
         for op in swapout_ops:
             for ts in op.outputs:
-                swapout_size += ut.get_tensor_size(ts)
+                swapout_size += ut.get_tensor_size(ts, self._batch_size)
 
         self._log_info(
             "Added {} operations to the model".format(
@@ -498,8 +516,6 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             if sout in ut.fanins(op):
                 fs.remove(op)
 
-        # ops need to be valid
-        fs = {op for op in fs if self._is_valid_op(op)}
         for op in fs:
             self._add_control_inputs(op, sout)
 
@@ -514,11 +530,10 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         fs -= (set(sin.control_inputs) | ut.fanins(sin))  # avoid duplication
         fs -= (ut.fanouts(sin) | self._get_control_outputs(sin))  # cycles
         fs = {op for op in fs if self._is_valid_op(op)}  # ops need to be valid
-        if len(fs) > 0:
+        if fs:
             self._add_control_inputs(sin, fs)
         else:
-            # sync failed, do async
-            self._add_control_dependency(src, dest, sin, 1)
+            self._add_control_dependency(src, dest, sin, 1, False)
 
     def _groupby(self, ops, limit=5):
         """Group `ops` into groups so that topological distance between
@@ -776,7 +791,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             self._add_control_dependency(
                 x[i][src], x[i][dest], x[i][sin], ahead)
 
-    def _add_control_dependency(self, src_op, dest_op, swapin_op, ahead):
+    def _add_control_dependency(self, src_op, dest_op, swapin_op, ahead,
+                                sync=True):
         """Find and add a control dependency to the graph.
 
         This method does an in-place modification to the graph.
@@ -799,9 +815,10 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             self._log_info(
                 "No control dependency op found for the swap-in " +
                 "{}.".format(swapin_op.name), 1)
-            # do synchronization
-            swapins = {op[2] for op in self._swap_ops}
-            self._sync_swapin(src_op, swapin_op, dest_op, swapins)
+            if sync:
+                # do synchronization
+                swapins = {op[2] for op in self._swap_ops}
+                self._sync_swapin(src_op, swapin_op, dest_op, swapins)
 
     def _search_by_level(self, src_op, dest_op, distance):
         """Find a control dependency operation using topological sort.
@@ -827,22 +844,22 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
 
         ctrld_level = -1
         for i in reversed(range(range_lb, range_ub)):
-            candidates = self._get_ops_by_level(i)
-            # candidates should be able to reach `dest_ops`
-            candidates = {
-                op
-                for op in candidates
-                if self._is_reachable(op, dest_op, False)
-            }
-            # ops must be not in a condition scope and be valid
-            candidates = {
-                op
-                for op in candidates
-                if (("/cond/" not in op.name) or self._is_valid_op(op))
-            }
+            cands = set()
+            for op in self._get_ops_by_level(i):
+                # candidates should be able to reach `dest_ops`
+                if not self._is_reachable(op, dest_op, False):
+                    continue
+                # ops must be valid
+                if not self._is_valid_op(op):
+                    continue
+                # ops must be not in a condition scope
+                if ("/cond/" in op.name and
+                    op.type not in {"Merge", "Switch"}):
+                    continue
+                cands.add(op)
             
-            if candidates:
-                result_ops |= candidates
+            if cands:
+                result_ops |= cands
                 ctrld_level = i
                 break
 
@@ -1235,11 +1252,79 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         """
         return self._get_level(op2) - self._get_level(op1)
 
+    def _search_for_inactive_ops(self, graph, is_training=True, keras=False):
+        """Search for ops that do not consume GPU memory (CPU ops)
+        or do not take part in computation in a given learning mode.
+        TFLMS does not deal with these ops.
+        """
+        def search(x):
+            sops = set()
+            for front in ut.fanouts(x):
+                if front.type in {"Identity"}:
+                    sops |= search(front)
+                elif front.type in {"Switch"}:
+                    sops.add(front)
+                else:
+                    continue
+            return sops
+
+        inactive_ops = set()
+        for op in graph.get_operations():
+            # CPU ops
+            if ut.is_cpu_op(op):
+                inactive_ops.add(op)
+                continue
+            # ops with learning mode
+            cands = {"FusedBatchNorm", "FusedBatchNormGrad"}
+            if ((op.type in cands) and (op.get_attr("is_training") != is_training)):
+                inactive_ops.add(op)
+                continue
+            # Ops inside a Switch (if-then-else)
+            if keras:
+                if (op.type in {"PlaceholderWithDefault"} and
+                    op.name.endswith("keras_learning_phase")):
+                    # find all Switch ops that use the boolean placeholder `keras_learning_phase`
+                    switch_ops = search(op)
+                    # obtain ops in the inactive branch of Switch
+                    for sop in switch_ops:
+                        # switch_f: out[0], switch_t: out[1]
+                        if is_training:
+                            inactive_ops |= set(sop.outputs[0].consumers())
+                        else:
+                            inactive_ops |= set(sop.outputs[1].consumers())
+        # An op is inactive if all of its fan-in ops are inactive
+        all_ops = set(graph.get_operations())
+        cands = all_ops - inactive_ops
+        stop = False
+        while (not stop) and cands:
+            found = False
+            for op in cands:
+                if op.type in {"Merge", "Switch"}:
+                    continue
+                fanins = ut.fanins(op)
+                if fanins & inactive_ops:
+                    # remove known inactive ops first
+                    valid = fanins - inactive_ops
+                    # remove ops that cannnot be triggered by themselves
+                    valid = {x for x in valid
+                             if not (x.type in {"Const"} or
+                                     "Variable" in op.name)}
+                    if len(valid) == 0:  # all fan-in ops are inactive
+                        inactive_ops.add(op)
+                        found = True
+            cands = all_ops - inactive_ops
+            if not found:
+                stop = True
+        return inactive_ops
+        
     def _is_valid_op(self, op):
         """Valid ops are ops that would consume GPU memory in a given learning mode.
         Hence, TFLMS deals with these ops only.
         """
-        return ut.is_valid_op(op, is_training=self._is_training)
+        if len(self._inactive_ops) == 0:
+            return True
+        else:
+            return op not in self._inactive_ops
 
     def _is_lms_model(self, graph=None):
         """Check if the current model was modified for LMS or not.
@@ -1283,7 +1368,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 "swapin_ahead and swapin_groupby manually.")
         else:
             if not self._is_lms_model(tf.get_default_graph()):
-                self.run(tf.get_default_graph())
+                self.run(tf.get_default_graph(), True)
 
     # Implementation of `set_model` from from tf.keras.callbacks.Callback
     def set_model(self, model):
@@ -1303,4 +1388,4 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             tf.logging.warning(msg)
         else:
             if not self._is_lms_model(tf.get_default_graph()):
-                self.run(tf.get_default_graph())
+                self.run(tf.get_default_graph(), True)

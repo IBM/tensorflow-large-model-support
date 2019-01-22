@@ -81,8 +81,6 @@ class Simulator(object):
             learning_params_size += var_size
         # use only `ratio` percent of the available memory
         self._max_mem *= self._ratio
-        self._log_info("The model has {} MB of learning parameters".format(
-            learning_params_size/1000/1000), 0)
         self._log_info("Available memory for simulation: {}".format(
             self._max_mem), 0)
 
