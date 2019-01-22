@@ -71,7 +71,7 @@ class Simulator(object):
     def _initialize(self):
         """Initialize some variables
         """
-        with tf.Session() as sess:
+        with tf.Session(graph=tf.Graph()) as sess:
             self._max_mem = sess.run(memory_stats_ops.BytesLimit())
         # exclude memories for variables
         learning_params_size = 0
@@ -370,4 +370,3 @@ class Simulator(object):
         else:
             self._lms._log_info(
                 "[Simulator] " + msg, self._debug_level, offset)
-
