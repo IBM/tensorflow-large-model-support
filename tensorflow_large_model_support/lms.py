@@ -1301,7 +1301,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             for op in cands:
                 if op.type in {"Merge", "Switch"}:
                     continue
-                fanins = ut.fanins(op)
+                fanins = ut.fanins(op) | set(op.control_inputs)
                 if fanins & inactive_ops:
                     # remove known inactive ops first
                     valid = fanins - inactive_ops
