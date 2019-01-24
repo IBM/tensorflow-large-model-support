@@ -46,7 +46,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                  serialization=[],
                  debug=False,
                  debug_level=1,
-                 cpu_device="/cpu:0"):
+                 cpu_device="/cpu:0",
+                 gpu_device=None):
         """Create an LMS object to edit the graph for supporting large model.
 
         Args:
@@ -72,6 +73,11 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
           debug: debug mode for LMS. Default `False`.
           debug_level: debug level for LMS (1 or 2). Default `1`.
           cpu_device: the device we would like swap tensors to.
+          gpu_device: the GPU device that this instance of LMS will operate on.
+            When models are written in a multi-tower fashion and operations are
+            assigned to different GPU devices using semantics like
+            `tf.device('/device:GPU:2'), LMS must be instantiated and run
+            multiple times, once for each GPU.
         """
         self._swapout_threshold = swapout_threshold
         self._swapin_groupby = swapin_groupby
@@ -82,6 +88,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             self._sync_mode = sync_mode
         self._serialization = serialization
         self._cpu_device = cpu_device
+        self._gpu_device = gpu_device
         self._debug = debug
         self._debug_level = debug_level
 
@@ -1270,6 +1277,11 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
 
         inactive_ops = set()
         for op in graph.get_operations():
+            # ops that are not on the given GPU
+            if not ut.is_gpu_op(op, self._gpu_device):
+                inactive_ops.add(op)
+                continue
+
             # CPU ops
             if ut.is_cpu_op(op):
                 inactive_ops.add(op)
@@ -1331,9 +1343,12 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         """
         if graph is None:
             graph = self._graph
+
         for op in graph.get_operations():
-            if 'lms/swap' in op.name:
-                return True
+            if 'lms/swapout' in op.name:
+                src_op = op.inputs[0].op
+                if ut.is_gpu_op(src_op, self._gpu_device):
+                    return True
         return False
 
     def _get_earliest_op(self, ops):

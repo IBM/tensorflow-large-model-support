@@ -71,6 +71,13 @@ def is_cpu_op(op):
     return "CPU" in op.device.upper()
 
 
+def is_gpu_op(op, gpu_device):
+    if gpu_device is None:
+        return True
+    else:
+        return op.device.upper() == gpu_device.upper()
+
+
 def build_control_outputs(graph):
     """Build a dictionary of (op, control_outputs).
     """
