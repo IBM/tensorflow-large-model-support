@@ -41,12 +41,19 @@
 import argparse
 import tensorflow as tf
 import numpy as np
+import os
 from tensorflow.python.keras.callbacks import Callback
 from tensorflow_large_model_support import LMS
 import ctypes
 _cudart = ctypes.CDLL('libcudart.so')
 
 tf.logging.set_verbosity(tf.logging.INFO)
+
+# Import the distribution module if invoked with distribution.
+dist_mod = None
+if "DDL_OPTIONS" in os.environ:
+  import ddl
+  dist_mod = ddl
 
 
 class CudaProfileCallback(Callback):
@@ -92,6 +99,9 @@ def get_callbacks(args):
         callbacks.append(CudaProfileCallback(args.nvprof_epoch,
                                              args.nvprof_start,
                                              args.nvprof_stop))
+    if "DDL_OPTIONS" in os.environ:
+        callbacks.append(dist_mod.DDLCallback())
+        callbacks.append(dist_mod.DDLGlobalVariablesCallback())
 
     # Enable TFLMS
     if args.lms:
@@ -124,8 +134,12 @@ def run_model(args):
     resnet50.compile(optimizer='rmsprop', loss='categorical_crossentropy')
     random_generator = random_image_generator(batch_size, num_classes,
                                               input_shape)
-    resnet50.fit_generator(random_generator, steps_per_epoch=args.steps,
-                           epochs=args.epochs, callbacks=get_callbacks(args))
+    steps_per_epoch = args.steps
+
+    verbose = 0 if dist_mod and dist_mod.rank() != 0 else 1
+    resnet50.fit_generator(random_generator, steps_per_epoch=steps_per_epoch,
+                           epochs=args.epochs, callbacks=get_callbacks(args),
+                           verbose=verbose)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
