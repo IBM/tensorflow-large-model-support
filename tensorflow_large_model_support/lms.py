@@ -286,7 +286,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         learning_params_size = 0
         for v in tf.trainable_variables():
             learning_params_size += ut.get_tensor_size(v, self._batch_size)
-        
+
         # find the largest operation
         max_op, max_op_size = None, 0
         n_edges = 0
@@ -864,7 +864,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                     op.type not in {"Merge", "Switch"}):
                     continue
                 cands.add(op)
-            
+
             if cands:
                 result_ops |= cands
                 ctrld_level = i
@@ -911,6 +911,12 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         def play_with_time(sim, *argv):
             passed = sim.play(argv[0], argv[1], argv[2])
             return passed
+
+        # This prevents LMS auto tuning from re-running on Keras when the
+        # model can train without LMS and  LMS is called in both
+        # set_model and set_params from Keras.
+        if self._swapout_threshold == self._topo_sort.size:
+            return
 
         self._log_info(
             "Searching values for swapout_threshold and swapin_ahead")
@@ -1328,7 +1334,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             if not found:
                 stop = True
         return inactive_ops
-        
+
     def _is_valid_op(self, op):
         """Valid ops are ops that would consume GPU memory in a given learning mode.
         Hence, TFLMS deals with these ops only.
