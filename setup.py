@@ -2,7 +2,7 @@ from setuptools import find_packages
 from setuptools import setup
 
 install_requires = [
-    'tensorflow >= 1.5',
+    'tensorflow-gpu >= 1.5',
     'toposort >= 1.5',
 ]
 
