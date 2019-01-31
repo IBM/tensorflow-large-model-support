@@ -920,7 +920,11 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
 
         self._log_info(
             "Searching values for swapout_threshold and swapin_ahead")
-        mem_ratio = float(os.getenv('TF_LMS_SIMULATOR_MEM_RATIO', 0.9))
+        mem_ratio_default = 0.9
+        if "DDL_OPTIONS" in os.environ:
+            mem_ratio_default = 0.8
+        mem_ratio = float(os.getenv('TF_LMS_SIMULATOR_MEM_RATIO',
+                                    mem_ratio_default))
 
         if (self._batch_size is None and
             self._model_has_placeholder_inputs(self._graph)):
