@@ -12,7 +12,7 @@
 """TOPOS
 """
 from tensorflow_large_model_support import util as ut
-
+import six
 
 class TOPOS(object):
     """TOPOS class builds a topological sort from the computational graph.
@@ -71,7 +71,7 @@ class TOPOS(object):
         xs = set()
         ys = [i for i in range(0, self.size)]
         for s in levels:
-            if ":" in s:
+            if isinstance(s, six.string_types) and ":" in s:
                 sl = slice(*map(lambda x: int(x.strip())
                                 if x.strip()
                                 else None, s.split(':')))
