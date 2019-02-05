@@ -81,8 +81,9 @@ class Simulator(object):
             learning_params_size += var_size
         # use only `ratio` percent of the available memory
         self._max_mem *= self._ratio
-        self._log_info("Available memory for simulation: {}".format(
-            self._max_mem), 0)
+        self._log_info("Available memory for simulation: {} GiB".format(
+            round(self._max_mem/1024/1024/1024, 2)) +
+                       " (memory ratio: {})".format(self._ratio), 0)
 
     def _reset(self):
         """Reset memory to the initial state.
@@ -92,7 +93,7 @@ class Simulator(object):
         self._used_mem = 0
         self._mem_traces = []
 
-    @ut.measure_time
+    # @ut.measure_time
     def play(self, threshold, ahead, groupby):
         """Check whether LMS works with parameters `threshold` and `ahead`.
 
@@ -100,11 +101,6 @@ class Simulator(object):
           True if successfully. Otherwise, False.
         """
         self._reset()
-        self._log_info("Simulating for " +
-                       "threshold {}".format(threshold) +
-                       ", ahead {}".format(ahead) +
-                       ", groupby {}".format(groupby) +
-                       ", sync_mode {}".format(self._sync_mode), 0)
 
         # keep tensors that were swapped output
         swapouts = set()
@@ -257,9 +253,19 @@ class Simulator(object):
             self._log_info("[{}] available memory {}".format(
                 k, self._get_free_mem()))
 
-        if self._plot:
-            self._generate_diagram(threshold, ahead, groupby)
         self._log_info("Swapped out {} tensors".format(len(swapouts)))
+
+        if passed:
+            self._generate_diagram(threshold, ahead, groupby)
+            self._log_info("Found a parameter set: " +
+                           "swapout_threshold {}".format(threshold) +
+                           ", swapin_ahead {}".format(ahead) +
+                           ", swapin_groupby {}".format(groupby) +
+                           ", sync_mode {}".format(self._sync_mode), 0)
+        else:
+            if self._plot:
+                self._generate_diagram(threshold, ahead, groupby)
+
         return passed
 
     def _allocate(self, ts_name, ts_size, lifetime):
@@ -324,11 +330,15 @@ class Simulator(object):
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
-        plt.plot([m/(1e9) for m in self._mem_traces],
-                 label="LMS(swapout_threshold: {}".format(threshold) +
-                 ", swapin_ahead: {}".format(ahead) +
-                 ", swapin_groupby: {})".format(groupby) +
-                 ", sync_mode: {})".format(self._sync_mode))
+        label_str = ""
+        if threshold == self._topo_sort.size:
+            label_str = "No LMS"
+        else:
+            label_str = "LMS(swapout_threshold: {}".format(threshold) + \
+                        ", swapin_ahead: {}".format(ahead) + \
+                        ", swapin_groupby: {}".format(groupby) + \
+                        ", sync_mode: {})".format(self._sync_mode)
+        plt.plot([m/(1e9) for m in self._mem_traces], label=label_str)
         plt.title("Simulation of memory consumption")
         plt.xlabel("Allocation/Deallocation steps")
         plt.ylabel("GigaBytes")
@@ -336,13 +346,15 @@ class Simulator(object):
         plt.grid(True)
         if not os.path.exists(self._lms_dir):
             os.makedirs(self._lms_dir)
-        plt.savefig("{}/tflms_simulator_mem_traces".format(self._lms_dir) +
-                    "_swapout_threshold{}".format(threshold) +
-                    "_swapin_ahead{}".format(ahead) +
-                    "_swapin_groupby{}".format(groupby) +
-                    "_sync_mode{}".format(self._sync_mode) +
-                    ".pdf",
-                    format='pdf')
+        if threshold == self._topo_sort.size:
+            label_str = "{}/nolms_simulator_mem_traces".format(self._lms_dir)
+        else:
+            label_str = "{}/tflms_simulator_mem_traces".format(self._lms_dir) + \
+                        "_swapout_threshold{}".format(threshold) + \
+                        "_swapin_ahead{}".format(ahead) + \
+                        "_swapin_groupby{}".format(groupby) + \
+                        "_sync_mode{}".format(self._sync_mode)
+        plt.savefig(label_str + ".pdf", format='pdf')
         plt.close()
 
     def _ts_size(self, ts):
@@ -368,3 +380,11 @@ class Simulator(object):
         else:
             self._lms._log_info(
                 "[Simulator] " + msg, self._debug_level, offset)
+    
+    @property
+    def plot(self):
+        return self._plot
+
+    @plot.setter
+    def plot(self, val):
+        self._plot = val

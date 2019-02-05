@@ -431,7 +431,6 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                         return True
         return False
 
-
     def _force_variable_initialization(self, vars):
         """
         For each variable, it should be assigned a value before
@@ -894,7 +893,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                     'swapin_groupby. Please specify it manually.')
 
     def _search_params(self):
-        def binary_search(sim, L, R, threshold, ahead, groupby, idx):
+        def binary_search(sim, L, R, threshold, ahead, groupby, idx, early_stop=False):
             params = {1: threshold, 2: ahead, 3: groupby}
             while L <= R:
                 m = floor((L+R)/2)
@@ -902,6 +901,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 params[idx] = m
                 passed = play_with_time(sim, params[1], params[2], params[3])
                 if passed:
+                    if early_stop:
+                        break
                     L = m + 1
                 else:
                     params[idx] = old_value  # restore the previous value
@@ -918,8 +919,12 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         if self._swapout_threshold == self._topo_sort.size:
             return
 
-        self._log_info(
-            "Searching values for swapout_threshold and swapin_ahead")
+        self._log_info("Searching values for parameters: " +
+                       "swapout_threshold, " +
+                       "swapin_ahead, " +
+                       "swapin_groupby and sync_mode. " +
+                       "Figures of memory consumption will be generated in " +
+                       "directory {}".format(self._lms_dir))
         mem_ratio_default = 0.9
         if "DDL_OPTIONS" in os.environ:
             mem_ratio_default = 0.8
@@ -942,7 +947,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             and self._swapin_ahead < 0
             and self._swapin_groupby < 0):
             # check if we really need LMS or not
+            sim.plot = True
             passed = play_with_time(sim, self._topo_sort.size, 1, 0)
+            sim.plot = self._autotune_plot
             if passed:
                 self._swapout_threshold = self._topo_sort.size
                 return
@@ -994,8 +1001,14 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             else:
                 passed = True
             if passed:
-                self._swapin_groupby = binary_search(
-                    sim, 0, self._topo_sort.size, threshold, ahead, groupby, 3)
+                ok = play_with_time(sim, threshold, ahead, self._topo_sort.size)
+                if ok:
+                    self._swapin_groupby = self._topo_sort.size
+                else:
+                    self._swapin_groupby = binary_search(
+                        sim, 0, self._topo_sort.size,
+                        threshold, ahead, groupby, 3,
+                        early_stop=True)
                 found_gr = True
             else:
                 self._sync_mode = 3
