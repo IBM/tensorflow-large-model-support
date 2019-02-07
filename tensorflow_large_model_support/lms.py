@@ -899,7 +899,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 m = int(floor((L+R)/2))
                 old_value = params[idx]
                 params[idx] = m
-                passed = play_with_time(sim, params[1], params[2], params[3])
+                passed = sim.play(params[1], params[2], params[3], sync_mode)
                 if passed:
                     if early_stop:
                         break
@@ -908,10 +908,6 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                     params[idx] = old_value  # restore the previous value
                     R = m - 1
             return params[idx]
-
-        def play_with_time(sim, *argv):
-            passed = sim.play(argv[0], argv[1], argv[2])
-            return passed
 
         # This prevents LMS auto tuning from re-running on Keras when the
         # model can train without LMS and  LMS is called in both
@@ -948,7 +944,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             and self._swapin_groupby < 0):
             # check if we really need LMS or not
             sim.plot = True
-            passed = play_with_time(sim, self._topo_sort.size, 1, 0)
+            passed = sim.play(self._topo_sort.size, 1, 0, self._sync_mode)
             sim.plot = self._autotune_plot
             if passed:
                 self._swapout_threshold = self._topo_sort.size
@@ -957,17 +953,24 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         found_th, found_ah, found_gr = False, False, False
         # binary search for threshold
         if (self._swapout_threshold < 0):
+            sync_mode = self._sync_mode
+            found_th = False
             threshold = 1
             ahead = 1 if self._swapin_ahead < 0 else self._swapin_ahead
             groupby = 0 if self._swapin_groupby < 0 else self._swapin_groupby
-            passed = play_with_time(sim, threshold, ahead, groupby)
-            if passed:
-                self._swapout_threshold = binary_search(
-                    sim, 1, self._topo_sort.size, threshold, ahead, groupby, 1)
-                found_th = True
-            else:
-                self._sync_mode = 3
-                return
+            while (not found_th):
+                passed = sim.play(threshold, ahead, groupby, sync_mode)
+                if passed:
+                    self._swapout_threshold = binary_search(
+                        sim, 1, self._topo_sort.size,
+                        threshold, ahead, groupby, 1, sync_mode)
+                    found_th = True
+                else:
+                    if sync_mode < 3:
+                        sync_mode += 1
+                    else:
+                        return
+            self._sync_mode = sync_mode
 
         # if swapin synchronization is enabled, do not need to search for
         # swapin_ahead and swapin_groupby
@@ -980,12 +983,13 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             ahead = 1
             groupby = 0 if self._swapin_groupby < 0 else self._swapin_groupby
             if not found_th:
-                passed = play_with_time(sim, threshold, ahead, groupby)
+                passed = sim.play(threshold, ahead, groupby, self._sync_mode)
             else:
                 passed = True
             if passed:
                 self._swapin_ahead = binary_search(
-                    sim, 1, self._topo_sort.size, threshold, ahead, groupby, 2)
+                    sim, 1, self._topo_sort.size,
+                    threshold, ahead, groupby, 2)
                 found_ah = True
             else:
                 self._sync_mode = 3
@@ -997,11 +1001,12 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             ahead = self._swapin_ahead
             groupby = 0
             if (not found_th) and (not found_ah):
-                passed = play_with_time(sim, threshold, ahead, groupby)
+                passed = sim.play(threshold, ahead, groupby, self._sync_mode)
             else:
                 passed = True
             if passed:
-                ok = play_with_time(sim, threshold, ahead, self._topo_sort.size)
+                ok = sim.play(threshold, ahead, self._topo_sort.size,
+                              self._sync_mode)
                 if ok:
                     self._swapin_groupby = self._topo_sort.size
                 else:
@@ -1381,6 +1386,16 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             x = self._get_level(op)
             if x < min:
                 min = x
+                rop = op
+        return rop
+
+    def _get_latest_op(self, ops):
+        max = -1
+        rop = None
+        for op in ops:
+            x = self._get_level(op)
+            if x > max:
+                max = x
                 rop = op
         return rop
 
