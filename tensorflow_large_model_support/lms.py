@@ -896,7 +896,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         def binary_search(sim, L, R, threshold, ahead, groupby, idx, early_stop=False):
             params = {1: threshold, 2: ahead, 3: groupby}
             while L <= R:
-                m = floor((L+R)/2)
+                m = int(floor((L+R)/2))
                 old_value = params[idx]
                 params[idx] = m
                 passed = play_with_time(sim, params[1], params[2], params[3])
