@@ -1132,7 +1132,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             # if inclusive mode is enabled,
             # only proceed included ops
             cand_ops &= self._incl_src_ops
-        cand_ops -= self._excl_src_ops
+        cand_ops = {op for op in cand_ops
+                    if (op not in self._excl_src_ops and
+                        self._is_valid_op(op))}
         return cand_ops
 
     def _filter_by_dest_ops(self, cand_ops):
@@ -1140,7 +1142,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             # if inclusive mode is enabled,
             # only proceed included ops
             cand_ops &= self._incl_dest_ops
-        cand_ops -= self._excl_dest_ops
+        cand_ops = {op for op in cand_ops
+                    if (op not in self._excl_dest_ops and
+                        self._is_valid_op(op))}
         return cand_ops
 
     def _filter_by_swapout_threshold(self, src_op, ts, cand_ops, threshold):
@@ -1384,7 +1388,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         rop = None
         for op in ops:
             x = self._get_level(op)
-            if x < min:
+            if x < min and self._is_valid_op(op):
                 min = x
                 rop = op
         return rop
@@ -1394,7 +1398,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         rop = None
         for op in ops:
             x = self._get_level(op)
-            if x > max:
+            if x > max and self._is_valid_op(op):
                 max = x
                 rop = op
         return rop

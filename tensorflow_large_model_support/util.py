@@ -128,6 +128,8 @@ def measure_time(f):
         start_time = time.time()
         rt = f(*args, **kwargs)
         args[0]._log_info(
-            "took: {} ms".format((time.time()-start_time)*1000), 0)
+            "{}() took: {} ms".format(
+                f.__name__,
+                (time.time()-start_time)*1000), 0)
         return rt
     return wrapper

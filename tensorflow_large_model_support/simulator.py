@@ -35,6 +35,8 @@ class Simulator(object):
         # this variable is used to simulate how slow the transfer is.
         # TODO: this variable should depend on the tensor size.
         self._swapout_delay = swapout_delay
+        # trainable variables
+        self._trainable_vars = None
         # memory limitation
         self._max_mem = 0
 
@@ -47,8 +49,15 @@ class Simulator(object):
         self._mem_traces = []
         # each tensor has a ref_count showing how many ops will consume it
         self._ref_counts = {}
+        self._dead_ref_counts = set()
         # simulated ops
         self._simulated_ops = set()
+        # keep tensors that were swapped out
+        self._swapouts = {}
+        # keep tensors that were swapped in
+        self._swapins = set()
+        # keep control input ops for swapins
+        self._ctrl_inputs = {}
 
         # aliases, variables
         self._graph = self._lms._graph
@@ -78,7 +87,8 @@ class Simulator(object):
             self._max_mem = sess.run(memory_stats_ops.BytesLimit())
         # exclude memories for variables
         learning_params_size = 0
-        for v in tf.trainable_variables():
+        self._trainable_vars = tf.trainable_variables()
+        for v in self._trainable_vars:
             var_size = self._ts_size(v)
             self._max_mem -= var_size
             learning_params_size += var_size
@@ -95,7 +105,11 @@ class Simulator(object):
         self._used_mem = 0
         self._mem_traces = []
         self._ref_counts = {}
+        self._dead_ref_counts = set()
         self._simulated_ops = set()
+        self._swapouts = {}
+        self._swapins = set()
+        self._ctrl_inputs = {}
 
     # @ut.measure_time
     def play(self, threshold, ahead, groupby, sync_mode):
@@ -106,15 +120,7 @@ class Simulator(object):
         """
         self._reset()
 
-        # keep tensors that were swapped output
-        swapouts = {}
-
-        # simulate swapin operations.
-        # store tensors which are swapped in at a given level.
-        # when a tensor is swapped in, it is added to mem and its `ref_count`
-        # increases by one.
-        swapins = {}
-
+        trainable_vars = [v.op.name for v in self._trainable_vars]
         # start simulating
         passed = True
         for k in range(0, self._topo_sort.size):
@@ -134,18 +140,20 @@ class Simulator(object):
                     continue
 
                 # do not simulate ops relating to variables
-                if 'Variable' in op_name:
+                if op_name in trainable_vars:
                     continue
 
                 # allocate memory for inputs
+                swapin_tensors = {}
                 for ts in in_tensors:
                     ts_name = ts.name
                     # whether this tensor was produced by an ignorable op
                     if not self._is_valid_op(ts.op):
                         continue
                     # whether this tensor was swapped in?
-                    found, _ = self._is_swapin_tensor(ts_name, op_name)
+                    found, sin = self._is_swapin_tensor(ts_name, op_name)
                     if found:
+                        swapin_tensors[ts_name] = sin
                         continue
                     else:
                         if ts_name not in self._mem:
@@ -160,8 +168,9 @@ class Simulator(object):
                 # allocate memory for outputs
                 for ts in out_tensors:
                     ts_name = ts.name
-                    n_consumers = len(ts.consumers())
-                    for cop in ts.consumers():
+                    consumers = ts.consumers()
+                    n_consumers = len(consumers)
+                    for cop in consumers:
                         if not self._is_valid_op(cop):
                             n_consumers -= 1
                     if n_consumers == 0:
@@ -179,96 +188,47 @@ class Simulator(object):
                     # check if the tensor was produced by an ignorable op
                     if not self._is_valid_op(ts.op):
                         continue
-                    # check if the tensor is swapped in
+                    # check if the tensor is a swapin tensor
                     ts_name = ts.name
-                    _, s = self._is_swapin_tensor(ts_name, op_name)
-                    self._ref_counts[s] -= 1
+                    if ts_name in swapin_tensors:
+                        s = swapin_tensors[ts_name]
+                    else:
+                        s = ts_name
+                    self._update_ref_counts(s, -1)
 
-                # update the ref_count for a swapout tensor only when
-                # the latest op that uses the tensor was simulated.
-                for ts in {x for x in swapouts
+                # simulate swapping out/in tensors
+                if op not in self._filter_by_source_ops({op}):
+                    continue
+                for ts in out_tensors:
+                    self._add_swapout_swapin(
+                        k, op, ts, threshold, ahead, groupby, sync_mode)
+
+                # finish simulating this ops
+                self._simulated_ops.add(op)
+
+                # collect swapout tensors before triggerring other swapins.
+                # only collect swapout tensors once the latest ops that
+                # use them were simulated.
+                for ts in {x for x in self._swapouts
                            if (x in self._mem and self._ref_counts[x] > 0
-                               and swapouts[x] in self._simulated_ops)}:
-                    self._ref_counts[ts] -= 1
+                               and self._swapouts[x] in self._simulated_ops)}:
+                    self._update_ref_counts(ts, -1)
 
                 # garbage collection
                 self._gc()  # collect input and swapout tensors
 
-                # swap out tensors
-                if op not in self._filter_by_source_ops({op}):
-                    continue
-                for ts in out_tensors:
-                    ndims = ts.shape.ndims
-                    if ndims is None or ndims <= 1:
-                        continue
-                    ts_name = ts.name
-
-                    # Maybe all consumers are ignorable ops,
-                    # so there is no need to swap out this tensor
-                    if ts_name not in self._ref_counts:
-                        continue
-
-                    ts_size = self._ts_size(ts)
-                    # filter by threshold
-                    dest_ops = self._filter_by_swapout_threshold(
-                        op, ts, set(), threshold)
-                    dest_ops = {dest
-                                for dest in dest_ops
-                                if self._is_valid_op(dest)}
-                    # filter by dest operations
-                    dest_ops = self._filter_by_dest_ops(dest_ops)
-                    if not dest_ops:
-                        continue
-                    # swapout tensors will be collected later
-                    latest_op = self._get_latest_op({
-                        op for op in ut.fanouts(op) - dest_ops
-                        if self._is_valid_op(op)})
-                    swapouts[ts_name] = latest_op
-                    self._ref_counts[ts_name] -= len(dest_ops)
-                    if (not self._is_swapout_sync(sync_mode) and self._ref_counts[ts_name] > 0):
-                        if (self._topo_sort.size - self._get_level(latest_op) > self._swapout_delay):
-                            self._ref_counts[ts_name] += self._swapout_delay
-                    self._log_info("[{}] swapped out {}".format(k, ts_name))
-                    # add swapin ops
-                    dests_grp = self._groupby(dest_ops, groupby)
-                    for dests in dests_grp:
-                        # create a new tensor to simulate swapin
-                        s = self._create_swapin_name(ts, dests)
-                        ts_info = (s, ts_size, len(dests))
-                        # put the tensor into the swapins queue
-                        dest = self._get_earliest_op(dests)
-                        ctrl_op = None
-                        if not self._is_swapin_sync(sync_mode):
-                            ctrl_op, _ = self._search_by_level(op, dest, ahead)
-                        if ctrl_op is None:  # swapin sync mode
-                            ctrl_op = self._get_latest_op({
-                                op for op in ut.fanins(dest)
-                                if self._is_valid_op(op)})
-                        if ctrl_op in swapins:
-                            swapins[ctrl_op] |= {ts_info}
-                        else:
-                            swapins[ctrl_op] = {ts_info}
-
-                # allocate memory for swapin tensors that are triggered by
-                # this operation
-                name_size_lifetimes = swapins[op] if op in swapins else set()
-                for nsl in name_size_lifetimes:
-                    ts_name, ts_size, lifetime = nsl
-                    self._log_info("[{}] swapped in {}".format(k, ts_name))
-                    ok = self._allocate(ts_name, ts_size, lifetime)
-                    if not ok:
-                        passed = False
-                        if not self._plot:
-                            return passed
-
-                self._simulated_ops.add(op)
+                # trigger other swapins
+                ok = self._trigger_swapins(k, op)
+                if not ok:
+                    passed = False
+                    if not self._plot:
+                        return passed
 
             self._log_info("[{}] available memory {}".format(
                 k, self._get_free_mem()))
 
         self._gc()
-
-        self._log_info("Swapped out {} tensors".format(len(swapouts)))
+        self._log_info("Swapped out {} tensors".format(len(self._swapouts)))
 
         if passed:
             self._generate_diagram(threshold, ahead, groupby, sync_mode)
@@ -282,6 +242,78 @@ class Simulator(object):
                 self._generate_diagram(threshold, ahead, groupby, sync_mode)
 
         return passed
+
+    def _trigger_swapins(self, k, op):
+        # allocate memory for swapin tensors that are triggered by
+        # this operation
+        passed = True
+        name_size_lifetimes = self._ctrl_inputs[op] \
+                              if op in self._ctrl_inputs else set()
+        for nsl in name_size_lifetimes:
+            ts_name, ts_size, lifetime = nsl
+            self._log_info("[{}] swapped in {}".format(k, ts_name))
+            ok = self._allocate(ts_name, ts_size, lifetime)
+            if not ok:
+                passed = False
+                if not self._plot:
+                    return passed
+        return passed
+
+    def _add_swapout_swapin(
+            self, k, op, ts,
+            threshold, ahead, groupby, sync_mode):
+        # swap out tensors
+        ndims = ts.shape.ndims
+        if ndims is None or ndims <= 1:
+            return
+        ts_name = ts.name
+
+        # Maybe all consumers are ignorable ops,
+        # so there is no need to swap out this tensor
+        if ts_name not in self._ref_counts:
+            return
+
+        ts_size = self._ts_size(ts)
+        # filter by threshold
+        dest_ops = self._filter_by_swapout_threshold(
+            op, ts, set(), threshold)
+        # filter by dest operations
+        dest_ops = self._filter_by_dest_ops(dest_ops)
+        if not dest_ops:
+            return
+        # swapout tensors will be collected later
+        latest_op = self._get_latest_op({
+            x for x in set(ts.consumers()) - dest_ops})
+        if latest_op is None:
+            latest_op = op
+        self._swapouts[ts_name] = latest_op
+        self._ref_counts[ts_name] -= len(dest_ops)
+        if (not self._is_swapout_sync(sync_mode) and
+            self._ref_counts[ts_name] > 0):
+            if (self._topo_sort.size - self._get_level(latest_op) > \
+                self._swapout_delay):
+                self._ref_counts[ts_name] += self._swapout_delay
+        self._update_ref_counts(ts_name, 0)
+        self._log_info("[{}] swapped out {}".format(k, ts_name))
+        # add swapin ops
+        dests_grp = self._groupby(dest_ops, groupby)
+        for dests in dests_grp:
+            # create a new tensor to simulate swapin
+            s = self._create_swapin_name(ts, dests)
+            ts_info = (s, ts_size, len(dests))
+            # put the tensor into the swapins queue
+            dest = self._get_earliest_op(dests)
+            ctrl_op = None
+            if not self._is_swapin_sync(sync_mode):
+                ctrl_op, _ = self._search_by_level(op, dest, ahead)
+            if ctrl_op is None:  # swapin sync mode
+                ctrl_op = self._get_latest_op({
+                    op for op in ut.fanins(dest)})
+            if ctrl_op in self._ctrl_inputs:
+                self._ctrl_inputs[ctrl_op] |= {ts_info}
+            else:
+                self._ctrl_inputs[ctrl_op] = {ts_info}
+            self._swapins.add(s)
 
     def _allocate(self, ts_name, ts_size, lifetime):
         """Allocate memory for tensor `ts`.
@@ -303,7 +335,7 @@ class Simulator(object):
         # allocate
         self._used_mem += ts_size
         self._mem[ts_name] = ts_size
-        self._ref_counts[ts_name] = lifetime
+        self._update_ref_counts(ts_name, lifetime, override=True)
         self._mem_traces.append(self._used_mem)
         self._log_info(
             "allocated {} bytes for {}, used {}, free {}".format(
@@ -317,7 +349,7 @@ class Simulator(object):
         """
         ts_size = self._mem[ts_name]
         del self._mem[ts_name]
-        del self._ref_counts[ts_name]
+        self._delete_ref_counts(ts_name)
         self._used_mem -= ts_size
         self._mem_traces.append(self._used_mem)
         self._log_info(
@@ -330,8 +362,8 @@ class Simulator(object):
         """Simulate TensorFlow garbage collection.
         A tensor will be released from mem if its `ref_count` becomes zero.
         """
-        cands = [k for k, v in self._ref_counts.items() if v == 0]
-        for ts_name in cands:
+        while len(self._dead_ref_counts) > 0:
+            ts_name = next(iter(self._dead_ref_counts))
             self._release(ts_name)
 
     def _get_free_mem(self):
@@ -382,10 +414,10 @@ class Simulator(object):
         return s
 
     def _is_swapin_tensor(self, ts_name, op_name):
-        """Check if the tensor is a swapin tensor or not.
+        """Check if the tensor is a swapin tensor AND already swapped in.
         """
-        for s in self._mem:
-            if (ts_name in s) and (op_name in s):
+        for s in self._swapins:
+            if ts_name in s and op_name in s and s in self._mem:
                 return (True, s)
         return (False, ts_name)
 
@@ -394,6 +426,22 @@ class Simulator(object):
 
     def _is_swapout_sync(self, sync_mode):
         return sync_mode in {1, 3}
+
+    def _update_ref_counts(self, ts_name, value, override=False):
+        if override:
+            self._ref_counts[ts_name] = value
+        else:
+            self._ref_counts[ts_name] += value
+
+        if self._ref_counts[ts_name] == 0:
+            self._dead_ref_counts.add(ts_name)
+        else:
+            if ts_name in self._dead_ref_counts:
+                self._dead_ref_counts.remove(ts_name)
+
+    def _delete_ref_counts(self, ts_name):
+        del self._ref_counts[ts_name]
+        self._dead_ref_counts.remove(ts_name)
 
     def _log_info(self, msg, level=-1, offset=0):
         if level >= 0:
