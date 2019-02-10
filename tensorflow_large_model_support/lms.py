@@ -893,7 +893,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                     'swapin_groupby. Please specify it manually.')
 
     def _search_params(self):
-        def binary_search(sim, L, R, threshold, ahead, groupby, idx, early_stop=False):
+        def binary_search(sim, L, R,
+                          threshold, ahead, groupby, sync_mode,
+                          idx, early_stop=False):
             params = {1: threshold, 2: ahead, 3: groupby}
             while L <= R:
                 m = int(floor((L+R)/2))
@@ -963,7 +965,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 if passed:
                     self._swapout_threshold = binary_search(
                         sim, 1, self._topo_sort.size,
-                        threshold, ahead, groupby, 1, sync_mode)
+                        threshold, ahead, groupby, sync_mode, 1)
                     found_th = True
                 else:
                     if sync_mode < 3:
@@ -989,7 +991,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             if passed:
                 self._swapin_ahead = binary_search(
                     sim, 1, self._topo_sort.size,
-                    threshold, ahead, groupby, 2)
+                    threshold, ahead, groupby, self._sync_mode, 2)
                 found_ah = True
             else:
                 self._sync_mode = 3
@@ -1012,7 +1014,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 else:
                     self._swapin_groupby = binary_search(
                         sim, 0, self._topo_sort.size,
-                        threshold, ahead, groupby, 3,
+                        threshold, ahead, groupby, self._sync_mode, 3,
                         early_stop=True)
                 found_gr = True
             else:
