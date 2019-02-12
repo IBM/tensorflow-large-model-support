@@ -307,8 +307,9 @@ class Simulator(object):
             if not self._is_swapin_sync(sync_mode):
                 ctrl_op, _ = self._search_by_level(op, dest, ahead)
             if ctrl_op is None:  # swapin sync mode
-                ctrl_op = self._get_latest_op({
-                    op for op in ut.fanins(dest)})
+                ctrl_op = self._get_latest_op({op for op in ut.fanins(dest)} - {op})
+            if ctrl_op is None and ahead != 1:
+                ctrl_op, _ = self._search_by_level(op, dest, 1)
             if ctrl_op in self._ctrl_inputs:
                 self._ctrl_inputs[ctrl_op] |= {ts_info}
             else:
