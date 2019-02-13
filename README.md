@@ -227,6 +227,11 @@ increase the input data size to cause out of memory situations and then
 easily experiment with TFLMS tuning options to train with larger data.
 See the comment header in the example for more information.
 
+## Contribution guidelines
+
+If you want to contribute to TensorFlow Large Model Support please read the
+[contribution guidelines](CONTRIBUTING.md).
+
 
 ## Citations
 
