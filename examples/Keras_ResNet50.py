@@ -105,6 +105,7 @@ def get_callbacks(args):
 
     # Enable TFLMS
     if args.lms:
+        check_mem_ratio(args)
         # Specifying this starting name, from previous runs of LMS,
         # speeds up graph analysis time.
         serialization = []
@@ -119,6 +120,19 @@ def get_callbacks(args):
         callbacks.append(lms)
 
     return callbacks
+
+def check_mem_ratio(args):
+    mem_ratio = float(os.getenv('TF_LMS_SIMULATOR_MEM_RATIO',
+                                1.0))
+    if (args.swapout_threshold < 0 or args.swapin_groupby < 0 or
+        args.swapin_ahead < 0) and mem_ratio > 0.8:
+            print('WARNING: The environment variable, '
+                  'TF_LMS_SIMULATOR_MEM_RATIO is either unset or set higher '
+                  'than 0.8. The operations used by this model have higher '
+                  'GPU memory overhead than their input and output tensor '
+                  'sizes use. It is recommended that '
+                  'TF_LMS_SIMULATOR_MEM_RATIO be set at 0.8 or lower to avoid '
+                  'out of memory issues with auto tune chosen values.')
 
 def run_model(args):
 
