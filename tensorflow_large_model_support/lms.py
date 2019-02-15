@@ -108,7 +108,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._incl_input_by_scopes = set()
         self._incl_input_by_types = set()
 
-        # Keep CPU ops and ops that are inactive in a given learning mode.
+        # Ops that do not involve in a specific learning mode are inactive.
+        # Learning mode is defined by property `is_training`.
         # Never use these ops as a control op. Otherwise, some computations
         # will be ignored.
         self._inactive_ops = None
@@ -291,7 +292,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         max_op, max_op_size = None, 0
         n_edges = 0
         for op in all_ops:
-            if self._is_valid_op(op):
+            if self._is_valid_op(op) and ut.is_gpu_op(op, self._gpu_device):
                 op_size = 0
                 for ts in op.inputs:
                     op_size += ut.get_tensor_size(ts, self._batch_size)
@@ -348,8 +349,11 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                         for op in self._get_ops_by_level(i)]), 1)
 
         # swapping tensors
-        # exclude cpu ops
-        cpu_ops = {op for op in all_ops if ut.is_cpu_op(op)}
+        # exclude cpu ops, ops in other GPUs, ops in other learning mode
+        excl_ops = {op for op in all_ops
+                    if (ut.is_cpu_op(op) or
+                        not ut.is_gpu_op(op, self._gpu_device) or
+                        not self._is_valid_op(op))}
 
         # inclusive source ops
         self._incl_src_ops = self._filter_scopes_and_types(
@@ -361,12 +365,12 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._excl_src_ops = self._filter_scopes_and_types(
             all_ops, self._excl_output_by_scopes,
             self._excl_output_by_types | self._unused_types | self._variable_ops)
-        self._excl_src_ops |= cpu_ops
+        self._excl_src_ops |= excl_ops
         # exclusive dest ops
         self._excl_dest_ops = self._filter_scopes_and_types(
             all_ops, self._excl_input_by_scopes,
             self._excl_input_by_types | self._unused_types | self._variable_ops)
-        self._excl_dest_ops |= cpu_ops
+        self._excl_dest_ops |= excl_ops
 
         if self._autotune_enabled():
             self._search_params()
@@ -536,6 +540,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         fs -= (set(sin.control_inputs) | ut.fanins(sin))  # avoid duplication
         fs -= (ut.fanouts(sin) | self._get_control_outputs(sin))  # cycles
         fs = {op for op in fs if self._is_valid_op(op)}  # ops need to be valid
+        fs = {op for op in fs if ut.is_gpu_op(op, self._gpu_device)}  # ops must be in this GPU
         if fs:
             self._add_control_inputs(sin, fs)
         else:
@@ -858,6 +863,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 # ops must be valid
                 if not self._is_valid_op(op):
                     continue
+                # ops must be in this GPU
+                if not ut.is_gpu_op(op, self._gpu_device):
+                    continue
                 # ops must be not in a condition scope
                 if ("/cond/" in op.name and
                     op.type not in {"Merge", "Switch"}):
@@ -1135,8 +1143,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             # only proceed included ops
             cand_ops &= self._incl_src_ops
         cand_ops = {op for op in cand_ops
-                    if (op not in self._excl_src_ops and
-                        self._is_valid_op(op))}
+                    if op not in self._excl_src_ops}
         return cand_ops
 
     def _filter_by_dest_ops(self, cand_ops):
@@ -1145,8 +1152,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             # only proceed included ops
             cand_ops &= self._incl_dest_ops
         cand_ops = {op for op in cand_ops
-                    if (op not in self._excl_dest_ops and
-                        self._is_valid_op(op))}
+                    if op not in self._excl_dest_ops}
         return cand_ops
 
     def _filter_by_swapout_threshold(self, src_op, ts, cand_ops, threshold):
@@ -1294,9 +1300,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         return self._get_level(op2) - self._get_level(op1)
 
     def _search_for_inactive_ops(self, graph, is_training=True, keras=False):
-        """Search for ops that do not consume GPU memory (CPU ops)
-        or do not take part in computation in a given learning mode.
-        TFLMS does not deal with these ops.
+        """Search for ops that do not take part in computation
+        in a given learning mode. TFLMS does not deal with these ops.
         """
         def search(x):
             sops = set()
@@ -1311,15 +1316,6 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
 
         inactive_ops = set()
         for op in graph.get_operations():
-            # ops that are not on the given GPU
-            if not ut.is_gpu_op(op, self._gpu_device):
-                inactive_ops.add(op)
-                continue
-
-            # CPU ops
-            if ut.is_cpu_op(op):
-                inactive_ops.add(op)
-                continue
             # ops with learning mode
             cands = {"FusedBatchNorm", "FusedBatchNormGrad"}
             if ((op.type in cands) and (op.get_attr("is_training") != is_training)):
@@ -1364,7 +1360,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         return inactive_ops
 
     def _is_valid_op(self, op):
-        """Valid ops are ops that would consume GPU memory in a given learning mode.
+        """Valid ops are ops that participate in a given learning mode.
         Hence, TFLMS deals with these ops only.
         """
         if len(self._inactive_ops) == 0:
@@ -1390,7 +1386,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         rop = None
         for op in ops:
             x = self._get_level(op)
-            if x < min and self._is_valid_op(op):
+            if (x < min and self._is_valid_op(op) and
+                ut.is_gpu_op(op, self._gpu_device)):
                 min = x
                 rop = op
         return rop
@@ -1400,7 +1397,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         rop = None
         for op in ops:
             x = self._get_level(op)
-            if x > max and self._is_valid_op(op):
+            if (x > max and self._is_valid_op(op) and 
+                ut.is_gpu_op(op, self._gpu_device)):
                 max = x
                 rop = op
         return rop

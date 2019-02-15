@@ -65,6 +65,7 @@ class Simulator(object):
         self._lms_dir = self._lms._lms_dir
         self._distance = self._lms._distance
         self._batch_size = self._lms._batch_size
+        self._gpu_device = self._lms._gpu_device
 
         # aliases, methods
         self._groupby = self._lms._groupby
@@ -132,8 +133,6 @@ class Simulator(object):
 
             for op in k_ops:
                 self._log_info("[{}] execute op {}".format(k, op.name))
-                in_tensors = set(op.inputs)
-                out_tensors = set(op.outputs)
                 op_name = op.name
 
                 if not self._is_valid_op(op):
@@ -143,66 +142,14 @@ class Simulator(object):
                 if op_name in trainable_vars:
                     continue
 
-                # allocate memory for inputs
-                swapin_tensors = {}
-                for ts in in_tensors:
-                    ts_name = ts.name
-                    # whether this tensor was produced by an ignorable op
-                    if not self._is_valid_op(ts.op):
-                        continue
-                    # whether this tensor was swapped in?
-                    found, sin = self._is_swapin_tensor(ts_name, op_name)
-                    if found:
-                        swapin_tensors[ts_name] = sin
-                        continue
-                    else:
-                        if ts_name not in self._mem:
-                            ts_size = self._ts_size(ts)
-                            lifetime = len(ts.consumers())
-                            ok = self._allocate(ts_name, ts_size, lifetime)
-                            if not ok:
-                                passed = False
-                                if not self._plot:
-                                    return passed
-
-                # allocate memory for outputs
-                for ts in out_tensors:
-                    ts_name = ts.name
-                    consumers = ts.consumers()
-                    n_consumers = len(consumers)
-                    for cop in consumers:
-                        if not self._is_valid_op(cop):
-                            n_consumers -= 1
-                    if n_consumers == 0:
-                        continue    # no ops consuming `ts`
-
-                    ts_size = self._ts_size(ts)
-                    ok = self._allocate(ts_name, ts_size, n_consumers)
+                # only simulate ops in this GPU
+                if ut.is_gpu_op(op, self._gpu_device):
+                    ok = self._simulate_op(k, op, threshold, ahead, groupby, sync_mode)
                     if not ok:
                         passed = False
                         if not self._plot:
                             return passed
-
-                # simulate execution
-                for ts in in_tensors:
-                    # check if the tensor was produced by an ignorable op
-                    if not self._is_valid_op(ts.op):
-                        continue
-                    # check if the tensor is a swapin tensor
-                    ts_name = ts.name
-                    if ts_name in swapin_tensors:
-                        s = swapin_tensors[ts_name]
-                    else:
-                        s = ts_name
-                    self._update_ref_counts(s, -1)
-
-                # simulate swapping out/in tensors
-                if op not in self._filter_by_source_ops({op}):
-                    continue
-                for ts in out_tensors:
-                    self._add_swapout_swapin(
-                        k, op, ts, threshold, ahead, groupby, sync_mode)
-
+                    
                 # finish simulating this ops
                 self._simulated_ops.add(op)
 
@@ -240,6 +187,74 @@ class Simulator(object):
         else:
             if self._plot:
                 self._generate_diagram(threshold, ahead, groupby, sync_mode)
+
+        return passed
+
+    def _simulate_op(self, k, op, threshold, ahead, groupby, sync_mode):
+        in_tensors = set(op.inputs)
+        out_tensors = set(op.outputs)
+        op_name = op.name
+        swapin_tensors = {}
+        passed = True
+
+        # allocate memory for inputs
+        for ts in in_tensors:
+            ts_name = ts.name
+            # whether this tensor was produced by an ignorable op
+            if not self._is_valid_op(ts.op):
+                continue
+            # whether this tensor was swapped in?
+            found, sin = self._is_swapin_tensor(ts_name, op_name)
+            if found:
+                swapin_tensors[ts_name] = sin
+                continue
+            else:
+                if ts_name not in self._mem:
+                    ts_size = self._ts_size(ts)
+                    lifetime = len(ts.consumers())
+                    ok = self._allocate(ts_name, ts_size, lifetime)
+                    if not ok:
+                        passed = False
+                        if not self._plot:
+                            return passed
+
+        # allocate memory for outputs
+        for ts in out_tensors:
+            ts_name = ts.name
+            consumers = ts.consumers()
+            n_consumers = len(consumers)
+            for cop in consumers:
+                if not self._is_valid_op(cop):
+                    n_consumers -= 1
+            if n_consumers == 0:
+                continue    # no ops consuming `ts`
+
+            ts_size = self._ts_size(ts)
+            ok = self._allocate(ts_name, ts_size, n_consumers)
+            if not ok:
+                passed = False
+                if not self._plot:
+                    return passed
+        
+        # simulate execution
+        for ts in in_tensors:
+            # check if the tensor was produced by an ignorable op
+            if not self._is_valid_op(ts.op):
+                continue
+            # check if the tensor is a swapin tensor
+            ts_name = ts.name
+            if ts_name in swapin_tensors:
+                s = swapin_tensors[ts_name]
+            else:
+                s = ts_name
+            self._update_ref_counts(s, -1)
+
+        # simulate swapping out/in tensors
+        if op not in self._filter_by_source_ops({op}):
+            return passed
+        for ts in out_tensors:
+            self._add_swapout_swapin(
+                k, op, ts, threshold, ahead, groupby, sync_mode)
 
         return passed
 
