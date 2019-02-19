@@ -149,7 +149,7 @@ class Simulator(object):
                         passed = False
                         if not self._plot:
                             return passed
-                    
+
                 # finish simulating this ops
                 self._simulated_ops.add(op)
 
@@ -223,8 +223,11 @@ class Simulator(object):
             ts_name = ts.name
             consumers = ts.consumers()
             n_consumers = len(consumers)
+            # do not allocate memory for tensors that are not consumed by
+            # ops in this GPU device
             for cop in consumers:
-                if not self._is_valid_op(cop):
+                if not self._is_valid_op(cop) or \
+                   not ut.is_gpu_op(cop, self._gpu_device):
                     n_consumers -= 1
             if n_consumers == 0:
                 continue    # no ops consuming `ts`
