@@ -149,6 +149,8 @@ def run_model(args):
     random_generator = random_image_generator(batch_size, num_classes,
                                               input_shape)
     steps_per_epoch = args.steps
+    if dist_mod:
+        steps_per_epoch = steps_per_epoch // dist_mod.size()
 
     verbose = 0 if dist_mod and dist_mod.rank() != 0 else 1
     resnet50.fit_generator(random_generator, steps_per_epoch=steps_per_epoch,
