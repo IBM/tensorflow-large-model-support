@@ -928,9 +928,10 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._log_info("Searching values for parameters: " +
                        "swapout_threshold, " +
                        "swapin_ahead, " +
-                       "swapin_groupby and sync_mode. " +
-                       "Figures of memory consumption will be generated in " +
-                       "directory {}".format(self._lms_dir))
+                       "swapin_groupby and sync_mode. ")
+        if self._autotune_plot:
+            self._log_info("Figures of memory consumption will be generated " +
+                           "in directory {}".format(self._lms_dir))
         mem_ratio_default = 0.9
         if "DDL_OPTIONS" in os.environ:
             mem_ratio_default = 0.8
@@ -953,9 +954,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             and self._swapin_ahead < 0
             and self._swapin_groupby < 0):
             # check if we really need LMS or not
-            sim.plot = True
             passed = sim.play(self._topo_sort.size, 1, 0, self._sync_mode)
-            sim.plot = self._autotune_plot
             if passed:
                 self._swapout_threshold = self._topo_sort.size
                 return
@@ -1272,10 +1271,12 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         Return:
           A dictionary of distance and frequency.
         """
+        if not os.path.exists(self._lms_dir):
+            os.makedirs(self._lms_dir)
         hist = {}
         all_ops = self._graph.get_operations()
         import tempfile
-        _, f_name = tempfile.mkstemp()
+        _, f_name = tempfile.mkstemp(dir=self._lms_dir)
         f = open(f_name, "w")
         f.write("#distance\tfrequency\n")
         for op1 in all_ops:

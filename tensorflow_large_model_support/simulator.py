@@ -178,7 +178,8 @@ class Simulator(object):
         self._log_info("Swapped out {} tensors".format(len(self._swapouts)))
 
         if passed:
-            self._generate_diagram(threshold, ahead, groupby, sync_mode)
+            if self._plot:
+                self._generate_diagram(threshold, ahead, groupby, sync_mode)
             self._log_info("Found a parameter set: " +
                            "swapout_threshold {}".format(threshold) +
                            ", swapin_ahead {}".format(ahead) +
@@ -468,11 +469,3 @@ class Simulator(object):
         else:
             self._lms._log_info(
                 "[Simulator] " + msg, self._debug_level, offset)
-    
-    @property
-    def plot(self):
-        return self._plot
-
-    @plot.setter
-    def plot(self, val):
-        self._plot = val
