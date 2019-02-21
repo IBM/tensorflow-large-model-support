@@ -2,7 +2,7 @@
 #
 # Licensed Materials - Property of IBM
 #
-# (C) Copyright IBM Corp. 2018. All Rights Reserved.
+# (C) Copyright IBM Corp. 2018, 2019. All Rights Reserved.
 #
 # US Government Users Restricted Rights - Use, duplication or
 # disclosure restricted by GSA ADP Schedule Contract with IBM Corp.
@@ -239,7 +239,7 @@ class Simulator(object):
                 passed = False
                 if not self._plot:
                     return passed
-        
+
         # simulate execution
         for ts in in_tensors:
             # check if the tensor was produced by an ignorable op

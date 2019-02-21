@@ -2,7 +2,7 @@
 #
 # Licensed Materials - Property of IBM
 #
-# (C) Copyright IBM Corp. 2018. All Rights Reserved.
+# (C) Copyright IBM Corp. 2018, 2019. All Rights Reserved.
 #
 # US Government Users Restricted Rights - Use, duplication or
 # disclosure restricted by GSA ADP Schedule Contract with IBM Corp.
@@ -1398,7 +1398,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         rop = None
         for op in ops:
             x = self._get_level(op)
-            if (x > max and self._is_valid_op(op) and 
+            if (x > max and self._is_valid_op(op) and
                 ut.is_gpu_op(op, self._gpu_device)):
                 max = x
                 rop = op

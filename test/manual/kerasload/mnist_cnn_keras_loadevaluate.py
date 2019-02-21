@@ -1,3 +1,4 @@
+# Copyright 2018, 2019. IBM All Rights Reserved.
 '''Trains a simple convnet on the MNIST dataset.
 
 Gets to 99.25% test accuracy after 12 epochs
@@ -72,4 +73,3 @@ print('model loaded')
 score = model.evaluate(x_test, y_test, verbose=0)
 print('Test loss:', score[0])
 print('Test accuracy:', score[1])
-
