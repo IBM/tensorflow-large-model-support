@@ -76,7 +76,8 @@ def random_image_generator(batch_size, num_classes, input_shape):
     # This generator yields batches of randomly generated images and categories.
     # The random generation parts came from
     # https://github.com/tensorflow/tensorflow/blob/v1.12.0/tensorflow/python/keras/testing_utils.py#L29
-    # These two random generations take a long time for large dimenstions and should
+
+    # These templates and random_data generations take a long time for large dimensions and should
     # really be in the while loop below to have
     # better random images being generated for every yield. They were moved out of the while loop
     # to speed up the generator since the intent of this example is to show resolutions with
@@ -105,7 +106,7 @@ def get_callbacks(args):
 
     # Enable TFLMS
     if args.lms:
-        check_mem_ratio(args)
+        handle_mem_ratio(args)
         # Specifying this starting name, from previous runs of LMS,
         # speeds up graph analysis time.
         serialization = []
@@ -121,14 +122,17 @@ def get_callbacks(args):
 
     return callbacks
 
-def check_mem_ratio(args):
-    mem_ratio = float(os.getenv('TF_LMS_SIMULATOR_MEM_RATIO',
+def handle_mem_ratio(args):
+    mem_ratio = os.environ.get('TF_LMS_SIMULATOR_MEM_RATIO')
+    if not mem_ratio:
+      os.environ['TF_LMS_SIMULATOR_MEM_RATIO'] = '0.8'
+    mem_ratio = float(os.environ.get('TF_LMS_SIMULATOR_MEM_RATIO',
                                 1.0))
     if (args.swapout_threshold < 0 or args.swapin_groupby < 0 or
         args.swapin_ahead < 0) and mem_ratio > 0.8:
             print('WARNING: The environment variable, '
-                  'TF_LMS_SIMULATOR_MEM_RATIO is either unset or set higher '
-                  'than 0.8. The operations used by this model have higher '
+                  'TF_LMS_SIMULATOR_MEM_RATIO is set higher than 0.8. '
+                  'The operations used by this model have higher '
                   'GPU memory overhead than their input and output tensor '
                   'sizes use. It is recommended that '
                   'TF_LMS_SIMULATOR_MEM_RATIO be set at 0.8 or lower to avoid '
