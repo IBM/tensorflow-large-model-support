@@ -12,6 +12,7 @@
 """
 import time
 from functools import wraps
+import tensorflow as tf
 
 
 def fanins(op):
@@ -133,3 +134,19 @@ def measure_time(f):
                 (time.time()-start_time)*1000), 0)
         return rt
     return wrapper
+
+
+def get_var_or_handle(gvars):
+    """If a variable is a resource variable then return its handle.
+    Otherwise, return itself.
+    """
+    rvars = set()
+    for v in gvars:
+        if hasattr(v, "handle") and hasattr(v.handle, "op") and isinstance(
+                v.handle.op, tf.Operation):
+            rvars.add(v.handle.op)  # ResourceVariable
+        elif v._variable is not None:
+            rvars.add(v._variable.op)  #RefVariable
+        else:
+            rvars.add(v)  # Variable, VariableV2
+    return rvars

@@ -323,21 +323,29 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._log_info("Original categorized topological sort has {} levels".format(
             self._topo_sort.size))
 
+        # exclude cpu ops, ops in other GPUs, ops in other learning mode
+        excl_ops = {op for op in all_ops
+                    if (ut.is_cpu_op(op) or
+                        not ut.is_gpu_op(op, self._gpu_device) or
+                        not self._is_valid_op(op))}
+
         # serialize the topological sort if enabled
         if self._serialization:
-            init_ops = self._force_variable_initialization(
-                {op for op in all_ops
-                 if op.type in {'Variable', 'VariableV2'}})
-            m = 0
-            if len(init_ops) > 0:
-                # when are all variables initialized?
-                self._topo_sort.reset()
-                self._topo_sort.build()
-                m = max({self._get_level(op) for op in init_ops})
+            assign_ops = set()
+            for x in ut.get_var_or_handle(tf.global_variables()):
+                assign_op = self._graph.get_operation_by_name(
+                    "{}/Assign".format(x.name))
+                if assign_op is not None:
+                    assign_ops.add(assign_op)
+            m = max({self._get_level(op) for op in assign_ops}) \
+                if len(assign_ops) > 0 else 0
+            self._log_info("The maximum level of Assign ops: {}".format(m),
+                           offset=2)
             self._log_info("Serialize the topological sort for levels: " +
-                           "{}".format(self._serialization), offset=2)
+                           "{}".format(self._serialization),
+                           offset=2)
             self._topo_sort.serialize_for(
-                self._serialization, min=m, excl_ops=self._inactive_ops)
+                self._serialization, min=m, excl_ops=excl_ops)
             self._log_info("New categorized topological sort has {} levels".format(
                 self._topo_sort.size), offset=2)
             self._rebuild_control_outputs(True)  # force rebuilding
@@ -347,13 +355,6 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 self._log_info("[{}]: {}".format(
                     i, [(op.name, op.type, op.device)
                         for op in self._get_ops_by_level(i)]), 1)
-
-        # swapping tensors
-        # exclude cpu ops, ops in other GPUs, ops in other learning mode
-        excl_ops = {op for op in all_ops
-                    if (ut.is_cpu_op(op) or
-                        not ut.is_gpu_op(op, self._gpu_device) or
-                        not self._is_valid_op(op))}
 
         # inclusive source ops
         self._incl_src_ops = self._filter_scopes_and_types(
@@ -434,45 +435,6 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                     if ts.shape[0].value is None:
                         return True
         return False
-
-    def _force_variable_initialization(self, vars):
-        """
-        For each variable, it should be assigned a value before
-        the other ops consumming the variable.
-        But, by analyzing a graph statically, we have no dependency
-        bewteen a Assign operation and other read/write operations.
-        So we need to create dependency explicitly.
-        ```
-        VariableV2:
-          input: None
-          output: reading ops, Assign, writing ops, ...
-        ```
-        """
-        init_ops = set()
-        for x in vars:
-            outs = ut.fanouts(x)
-            assign_ops = {op for op in outs if op.type == "Assign"}
-
-            # initialization op is the first Assign op
-            m = min({self._get_level(op) for op in assign_ops})
-            first_assign_ops = {
-                op for op in assign_ops
-                if self._get_level(op) == m
-            }
-            if len(first_assign_ops) != 1:
-                self._log_info("Variable: {}".format(x.name))
-                self._log_info("Fanout ops: {}".format(
-                    {(op.name, op.type, self._get_level(op))
-                     for op in outs}))
-                raise ValueError(
-                    'Could not find the first assignment for {}'.format(x.name))
-
-            # initialize the variable first
-            for y in outs - first_assign_ops:
-                self._add_control_inputs(y, first_assign_ops)
-            init_ops |= first_assign_ops
-
-        return init_ops
 
     def _rewrite_for_swapping(self):
         """Add swapin and swapout ops for ops that are reachable from `all_ops`.

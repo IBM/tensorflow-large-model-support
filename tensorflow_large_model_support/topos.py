@@ -11,8 +11,10 @@
 
 """TOPOS
 """
+import tensorflow as tf
 from tensorflow_large_model_support import util as ut
 import six
+
 
 class TOPOS(object):
     """TOPOS class builds a topological sort from the computational graph.
@@ -66,7 +68,7 @@ class TOPOS(object):
         Args:
           levels: a list of strings of Python slicings
         """
-
+        excl_ops |= ut.get_var_or_handle(tf.global_variables())
         # build a list of indices
         xs = set()
         ys = [i for i in range(0, self.size)]
@@ -105,15 +107,15 @@ class TOPOS(object):
         Exclude the following ops:
           - ops in the "/cond/" scope,
           - ops in the "loss" scope,
-          - variables and,
-          - user-defined exclusive ops.
+          - exclusive ops (including variables)
         """
-        cond_ops = {op for op in xs
-                    if ("/cond/" in op.name or
-                        "loss" in op.name or
-                        "Variable" in op.name or
-                        op in excl_ops)}
-        if len(cond_ops) > 0:
+        xs = {op
+              for op in xs
+              if not ("/cond/" in op.name or
+                      "loss" in op.name or
+                      op in excl_ops)}
+
+        if len(xs) == 0:
             return set()
         else:
             pass
