@@ -42,6 +42,7 @@ import argparse
 import tensorflow as tf
 import numpy as np
 import os
+from tensorflow.python.keras import backend as K
 from tensorflow.python.keras.callbacks import Callback
 from tensorflow_large_model_support import LMS
 import ctypes
@@ -139,9 +140,14 @@ def handle_mem_ratio(args):
                   'out of memory issues with auto tune chosen values.')
 
 def run_model(args):
-
     image_dim = args.image_size
-    input_shape = (image_dim, image_dim, 3)
+
+    if args.channels_last:
+        K.set_image_data_format('channels_last')
+        input_shape = (image_dim, image_dim, 3)
+    else:
+        K.set_image_data_format('channels_first')
+        input_shape = (3, image_dim, image_dim)
 
     num_classes = 15
     batch_size = 1
@@ -149,7 +155,15 @@ def run_model(args):
     resnet50 = tf.keras.applications.ResNet50(weights=None, include_top=True,
                                               input_shape=input_shape,
                                               classes=num_classes)
-    resnet50.compile(optimizer='rmsprop', loss='categorical_crossentropy')
+
+    if args.tensors_on_oom:
+        run_options = tf.RunOptions(report_tensor_allocations_upon_oom=True)
+        run_metadata = tf.RunMetadata()
+        resnet50.compile(optimizer='rmsprop', loss='categorical_crossentropy',
+                         options=run_options, run_metadata=run_metadata)
+    else:
+        resnet50.compile(optimizer='rmsprop', loss='categorical_crossentropy')
+
     random_generator = random_image_generator(batch_size, num_classes,
                                               input_shape)
     steps_per_epoch = args.steps
@@ -224,6 +238,31 @@ if __name__ == "__main__":
                         default=9,
                         help='The batch in which to stop CUDA profiling. '
                              '(Default 9)')
+
+    # channels first/last parameter
+    ch_fl_group = parser.add_mutually_exclusive_group(required=False)
+    ch_fl_group.add_argument('--channels_last', dest='channels_last',
+                             action='store_true',
+                             help='Create the model and images with '
+                                  'channels last.')
+    ch_fl_group.add_argument('--no-channels_last', dest='channels_last',
+                             action='store_false',
+                             help='Create the model and images with '
+                                  'channels first. (Default)')
+    parser.set_defaults(channels_last=False)
+
+    # Show tensors in GPU memory on OOM
+    tensors_on_oom = parser.add_mutually_exclusive_group(required=False)
+    tensors_on_oom.add_argument('--show_tensors_on_oom', dest='tensors_on_oom',
+                                action='store_true',
+                                help='Show tensors in GPU on out of memory '
+                                     'errors.')
+    tensors_on_oom.add_argument('--no-show_tensors_on_oom',
+                                dest='tensors_on_oom',
+                                action='store_false',
+                                help='Do not show tensors in GPU on out of '
+                                     'memory errors. (Default)')
+    parser.set_defaults(tensors_on_oom=False)
 
     args = parser.parse_args()
     run_model(args)
