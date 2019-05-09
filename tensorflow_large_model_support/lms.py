@@ -1233,6 +1233,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         Return:
           A dictionary of distance and frequency.
         """
+        if not self.autotune_plot:
+            return
+
         if not os.path.exists(self._lms_dir):
             os.makedirs(self._lms_dir)
         hist = {}
