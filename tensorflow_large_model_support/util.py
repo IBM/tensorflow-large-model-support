@@ -150,3 +150,12 @@ def get_var_or_handle(gvars):
         else:
             rvars.add(v)  # Variable, VariableV2
     return rvars
+
+
+def get_op_size(op, batch_size):
+    op_size = 0
+    for ts in op.inputs:
+        op_size += get_tensor_size(ts, batch_size)
+    for ts in op.outputs:
+        op_size += get_tensor_size(ts, batch_size)
+    return op_size

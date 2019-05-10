@@ -44,6 +44,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                  swapin_ahead=-1,
                  sync_mode=0,
                  serialization=[],
+                 serialization_by_size=0,
                  debug=False,
                  debug_level=1,
                  cpu_device="/cpu:0",
@@ -70,6 +71,10 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             string in which each slicing represents level indices in the
             topological sort. E.g. [1, '3:5', 7] means levels 1, 3, 4, 5 and 7
             are serialized. Default `[]` (turn off).
+          serialization_by_size: serialize operations in levels of the
+            topological sort, if the cumulative memory consumption of
+            the level is greater than `serialization_by_size` GiB.
+            Default `0` (turn off).
           debug: debug mode for LMS. Default `False`.
           debug_level: debug level for LMS (1 or 2). Default `1`.
           cpu_device: the device we would like swap tensors to.
@@ -87,6 +92,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         else:
             self._sync_mode = sync_mode
         self._serialization = serialization
+        self._serialization_by_size = serialization_by_size
         self._cpu_device = cpu_device
         self._gpu_device = gpu_device
         self._debug = debug
@@ -293,11 +299,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         n_edges = 0
         for op in all_ops:
             if self._is_valid_op(op) and ut.is_gpu_op(op, self._gpu_device):
-                op_size = 0
-                for ts in op.inputs:
-                    op_size += ut.get_tensor_size(ts, self._batch_size)
-                for ts in op.outputs:
-                    op_size += ut.get_tensor_size(ts, self._batch_size)
+                op_size = ut.get_op_size(op, self._batch_size)
                 if op_size > max_op_size:
                     max_op_size = op_size
                     max_op = op
@@ -322,12 +324,15 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._topo_sort.build()
         self._log_info("Original categorized topological sort has {} levels".format(
             self._topo_sort.size))
-
+        self._log_level_sizes()
         # exclude cpu ops, ops in other GPUs, ops in other learning mode
         excl_ops = {op for op in all_ops
                     if (ut.is_cpu_op(op) or
                         not ut.is_gpu_op(op, self._gpu_device) or
                         not self._is_valid_op(op))}
+
+        sl_by_size = self._get_serialization_levels_by_size(self._serialization_by_size)
+        self._serialization += sl_by_size
 
         # serialize the topological sort if enabled
         if self._serialization:
@@ -350,7 +355,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 self._topo_sort.size), offset=2)
             self._rebuild_control_outputs(True)  # force rebuilding
 
+
         if self._debug and self._debug_level >= 1:
+            self._log_info("Operations in each topological sort level:", 1)
             for i in range(0, self._topo_sort.size):
                 self._log_info("[{}]: {}".format(
                     i, [(op.name, op.type, op.device)
@@ -1444,3 +1451,45 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         else:
             if not self._is_lms_model(tf.get_default_graph()):
                 self.run(tf.get_default_graph(), True)
+
+    def _log_level_sizes(self):
+        """Log the memory consuming sizes of the valid GPU operations in each
+        topological level.
+        """
+        # dict of level integer to cumulative size of level
+        level_to_size = {}
+
+        for x in range(0, self._topo_sort.size):
+            level_to_size[x] = self._get_level_size(x)
+        sorted_sizes = sorted(level_to_size.items(), key=lambda item: item[1],
+                              reverse=True)
+        self._log_info("Cumulative memory consumed by each topological sort "
+                       "level:", 1)
+        for pair in sorted_sizes:
+            self._log_info('Level {} cumulative size {} GiB'.format(pair[0],
+                round(pair[1]/1024/1024/1024, 2)), 1)
+
+    def _get_serialization_levels_by_size(self, size):
+        """Get a list of topological levels that have valid GPU operations
+        which cumulatively consume more memory than the input size.
+
+        Args:
+          size: a size in GiB to use as a level filter
+
+        Return:
+          A list of topological level integers.
+        """
+        serialization_levels = []
+        for x in range(0, self._topo_sort.size):
+            level_size = self._get_level_size(x)
+            if level_size/1024/1024/1024 > size:
+                serialization_levels.append(x)
+        return serialization_levels
+
+    def _get_level_size(self, level):
+        ops = self._topo_sort.get_ops(level)
+        level_size = 0
+        for op in ops:
+            if self._is_valid_op(op) and ut.is_gpu_op(op, self._gpu_device):
+                level_size += ut.get_op_size(op, self._batch_size)
+        return level_size

@@ -117,7 +117,8 @@ def get_callbacks(args):
                   swapin_groupby=args.swapin_groupby,
                   swapin_ahead=args.swapin_ahead,
                   sync_mode=args.sync_mode,
-                  serialization=serialization)
+                  serialization=serialization,
+                  serialization_by_size=args.serialization_by_size)
         lms.batch_size = 1
         callbacks.append(lms)
 
@@ -216,6 +217,12 @@ if __name__ == "__main__":
     parser.add_argument("--sync_mode", type=int, default=0,
                         help='Sync mode of TFLMS. See the TFLMS documentation '
                              'for more information')
+    parser.add_argument("--serialization_by_size", type=float, default=0,
+                        help='Serialize operations in levels of the '
+                             'topological sort, if the cumulative memory '
+                             'consumption of the level is greater than '
+                             'serialization_by_size. The size unit is GiB. '
+                             'Default 0 (turn off).')
     # nvprof parameters
     nvprof_group = parser.add_mutually_exclusive_group(required=False)
     nvprof_group.add_argument('--nvprof', dest='nvprof', action='store_true',

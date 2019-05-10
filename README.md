@@ -82,6 +82,8 @@ _sync_mode_: whether to do synchronization between data transfer and kernel comp
 
 _serialization_: serialize operations at the same level in the topological sort. This option accepts a list of Python slicing string in which each slicing represents level indices in the topological sort. E.g. [1, '3:5', 7] means levels 1, 3, 4, 5 and 7 are serialized. Default `[]` (turn off).
 
+_serialization_by_size_: serialize operations in levels of the topological sort, if the cumulative memory consumption of the level is greater than `serialization_by_size` GiB. Default `0` (turn off).
+
 _debug_ :: Debug mode for LMS. Default `False`.
 
 _debug_level_ :: Debug level for LMS (1 or 2). Default `1`.
