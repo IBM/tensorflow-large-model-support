@@ -294,7 +294,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         for v in tf.trainable_variables():
             learning_params_size += ut.get_tensor_size(v, self._batch_size)
 
-        # find the largest operation
+        # find the largest GPU operation
         max_op, max_op_size = None, 0
         n_edges = 0
         for op in all_ops:
@@ -313,7 +313,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             round(learning_params_size/1024/1024, 2)), 0)
         if max_op is not None:
             self._log_info(
-                "The largest operation is {}".format(max_op.name) +
+                "The largest GPU operation is {}".format(max_op.name) +
                 " consuming {} GiB".format(round(max_op_size/1024/1024/1024, 2)))
 
         # build a control output topology
