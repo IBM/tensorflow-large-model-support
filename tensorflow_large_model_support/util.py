@@ -74,7 +74,10 @@ def is_cpu_op(op):
 
 def is_gpu_op(op, gpu_device):
     if gpu_device is None:
-        return True
+        if is_cpu_op(op):
+            return False
+        else:
+            return True
     else:
         return op.device.upper() == gpu_device.upper()
 

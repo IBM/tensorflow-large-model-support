@@ -479,8 +479,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         """
         def is_device_op(op):
             return (ut.is_gpu_op(op, self._gpu_device) and
-                    self._is_valid_op(op) and
-                    not ut.is_cpu_op(op))
+                    self._is_valid_op(op))
         for h_op in cpu_ops:
             d_ops = {op for op in ut.fanins(h_op)
                      if is_device_op(op)}
@@ -514,8 +513,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         """
         def is_device_op(op):
             return (ut.is_gpu_op(op, self._gpu_device) and
-                    self._is_valid_op(op) and
-                    not ut.is_cpu_op(op))
+                    self._is_valid_op(op))
         for h_op in cpu_ops:
             d_ops = {op for op in ut.fanouts(h_op)
                      if is_device_op(op)}
