@@ -87,7 +87,7 @@ class TOPOS(object):
         prev_ops = set()
         prev_level = -1
         for i in indices:
-            if (not prev_ops) and (prev_level + 1 == i):
+            if (i - prev_level != 1):  # non-consecutive levels
                 prev_ops = set()
             prev_ops = self._serialize_at(i, prev_ops, excl_ops)
             prev_level = i
