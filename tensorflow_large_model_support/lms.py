@@ -451,62 +451,90 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             self._insert_swap_nodes(op)
 
     def _sync_ops(self):
-        """TODO: write comment
+        """Do synchronization for data transfers between CPU and GPU.
         """
-        src, sout, sin, dest = 0, 1, 2, 3
-        # sync for swap-out ops
-        if self._is_swapout_sync():
-            souts = {op[sout] for op in self._swap_ops}
-            src_sout = {(op[src], op[sout]) for op in self._swap_ops}
-            for op_src, sout in src_sout:
-                self._sync_swapout(op_src, sout, souts)
+        cpu_ops = {op for op in self._graph.get_operations()
+                   if (ut.is_cpu_op(op) and
+                       self._is_valid_op(op))}
 
         # sync for swap-in ops
         if self._is_swapin_sync():
-            sins = {op[sin] for op in self._swap_ops}
-            sin_dest = {(op[src], op[sin], op[dest]) for op in self._swap_ops}
-            for op_src, sin, dest in sin_dest:
-                self._sync_swapin(op_src, sin, dest, sins)
+            self._sync_h2d(cpu_ops)
         else:
             self._add_control_dependencies()
 
-    def _sync_swapout(self, src, sout, souts):
-        """TODO: write comment
-        Need to update control outputs topology before calling
-        this method
+        # sync for swap-out ops
+        if self._is_swapout_sync():
+            self._sync_d2h(cpu_ops)
+
+    def _sync_d2h(self, cpu_ops):
+        """Do synchronization for data transfers from device to host.
         """
-        self._log_info("Do synchronization for the swap-out " +
-                       "{}.".format(sout.name), 1)
-
-        fs = ut.fanouts(src) | self._get_control_outputs(src)
-        fs -= souts  # self-loop and cycles among swap-outs
-
-        # avoid duplication
-        for op in fs:
-            if sout in op.control_inputs:
-                fs.remove(op)
-            if sout in ut.fanins(op):
-                fs.remove(op)
-
-        for op in fs:
-            self._add_control_inputs(op, sout)
-
-    def _sync_swapin(self, src, sin, dest, sins):
-        """TODO: write comment
+        def is_device_op(op):
+            return (ut.is_gpu_op(op, self._gpu_device) and
+                    self._is_valid_op(op) and
+                    not ut.is_cpu_op(op))
+        for h_op in cpu_ops:
+            d_ops = {op for op in ut.fanins(h_op)
+                     if is_device_op(op)}
+            if len(d_ops) != 1:  # only deal with 1-1 relationship
+                continue
+            h_op_outs = {op for op in ut.fanouts(h_op) | self._get_control_outputs(h_op)
+                         if is_device_op(op)}
+            h_op_ins = {op for op in ut.fanins(h_op) | set(h_op.control_inputs)
+                        if is_device_op(op)}
+            for d_op in d_ops:
+                self._log_info("Do synchronization between " +
+                               "{} and {}.".format(d_op.name, h_op.name), 1)
+                fs = {op for op in ut.fanouts(d_op) | self._get_control_outputs(d_op)
+                      if is_device_op(op)}
+                # cycles: h_op -> fs_ops -> h_op_ins -> h_op
+                fs -= {op1
+                       for op1 in fs
+                       for op2 in h_op_ins
+                       if (self._is_reachable(op1, op2, False, True) or op1 == op2)}
+                # duplication
+                fs -= h_op_outs
+                if fs:
+                    for op in fs:
+                        self._add_control_inputs(op, h_op)
+                else:
+                    self._log_info("Could not do synchronization between " +
+                                   "{} and {}.".format(d_op.name, h_op.name), 1)
+        
+    def _sync_h2d(self, cpu_ops):
+        """Do synchronization for data transfers from host to device.
         """
-        self._log_info("Do synchronization for the swap-in " +
-                       "{}.".format(sin.name), 1)
-
-        fs = ut.fanins(dest) | set(dest.control_inputs)
-        fs -= sins  # self-loop and cycles among swap-ins
-        fs -= (set(sin.control_inputs) | ut.fanins(sin))  # avoid duplication
-        fs -= (ut.fanouts(sin) | self._get_control_outputs(sin))  # cycles
-        fs = {op for op in fs if self._is_valid_op(op)}  # ops need to be valid
-        fs = {op for op in fs if ut.is_gpu_op(op, self._gpu_device)}  # ops must be in this GPU
-        if fs:
-            self._add_control_inputs(sin, fs)
-        else:
-            self._add_control_dependency(src, dest, sin, 1, False)
+        def is_device_op(op):
+            return (ut.is_gpu_op(op, self._gpu_device) and
+                    self._is_valid_op(op) and
+                    not ut.is_cpu_op(op))
+        for h_op in cpu_ops:
+            d_ops = {op for op in ut.fanouts(h_op)
+                     if is_device_op(op)}
+            if len(d_ops) != 1:  # only deal with 1-1 relationship
+                continue
+            h_op_outs = {op for op in ut.fanouts(h_op) | self._get_control_outputs(h_op)
+                         if is_device_op(op)}
+            h_op_ins = {op for op in ut.fanins(h_op) | set(h_op.control_inputs)
+                        if is_device_op(op)}
+            for d_op in d_ops:
+                self._log_info("Do synchronization between " +
+                               "{} and {}.".format(h_op.name, d_op.name), 1)
+                fs = {op for op in ut.fanins(d_op) | set(d_op.control_inputs)
+                      if is_device_op(op)}
+                # cycles: h_op -> h_op_outs -> fs_ops -> h_op
+                fs -= {op2
+                       for op1 in h_op_outs
+                       for op2 in fs
+                       if (self._is_reachable(op1, op2, False, True) or op1 == op2)}
+                # avoid duplication
+                fs -= h_op_ins
+                if fs:
+                    self._add_control_inputs(h_op, fs)
+                else:
+                    self._log_info("Could not do synchronization between " +
+                                   "{} and {}.".format(d_op.name, h_op.name), 1)
 
     def _groupby(self, ops, limit=5):
         """Group `ops` into groups so that topological distance between
@@ -790,8 +818,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 "{}.".format(swapin_op.name), 1)
             if sync:
                 # do synchronization
-                swapins = {op[2] for op in self._swap_ops}
-                self._sync_swapin(src_op, swapin_op, dest_op, swapins)
+                self._sync_h2d({swapin_op})
 
     def _search_by_level(self, src_op, dest_op, distance):
         """Find a control dependency operation using topological sort.
@@ -1037,7 +1064,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         ret_ops |= type_ops
         return ret_ops
 
-    def _is_reachable(self, src_op, dest_op, via_longest=True):
+    def _is_reachable(self, src_op, dest_op, via_longest=True,
+                      include_control_edges=False):
         """Check whether there exists a path from src_op to dest_op.
         The path's length must be equal to the distance from
         `src_op` to `dest_ops`. In other words, we search for the
@@ -1054,6 +1082,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         dest_level = self._get_level(dest_op)
 
         fanouts = ut.fanouts(src_op)
+        if include_control_edges:
+            fanouts |= self._get_control_outputs(src_op)
         for l in range(src_level+1, dest_level):
             latest_ops = self._get_ops_by_level(l)
             latest_ops &= fanouts
@@ -1066,6 +1096,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
 
             for op in latest_ops:
                 fanouts |= ut.fanouts(op)
+                if include_control_edges:
+                    fanouts |= self._get_control_outputs(op)
 
         if dest_op in fanouts:
             return True
