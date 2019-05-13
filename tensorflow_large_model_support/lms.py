@@ -332,7 +332,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                         not ut.is_gpu_op(op, self._gpu_device) or
                         not self._is_valid_op(op))}
 
-        sl_by_size = self._get_serialization_levels_by_size(self._serialization_by_size)
+        sl_by_size = []
+        if self._serialization_by_size:
+            sl_by_size = self._get_serialization_levels_by_size(self._serialization_by_size)
         self._serialization += sl_by_size
 
         # serialize the topological sort if enabled
@@ -509,7 +511,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 else:
                     self._log_info("Could not do synchronization between " +
                                    "{} and {}.".format(d_op.name, h_op.name), 1)
-        
+
     def _sync_h2d(self, cpu_ops):
         """Do synchronization for data transfers from host to device.
         """
