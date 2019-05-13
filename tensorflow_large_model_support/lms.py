@@ -121,6 +121,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._inactive_ops = None
 
         # AutoTune
+        self._autotune_mode = False
         self._batch_size = None
         self._autotune_plot = False
 
@@ -386,6 +387,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 self._log_info("LMS is not necessary. Turned LMS off.")
                 return
             self._validate_parameters()
+            self._autotune_mode = True
 
         self._print_configuration()
         self._log_histogram()  # build a histogram of distance
@@ -417,7 +419,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._log_info(
             "Added {} operations to the model".format(
                 n_swapout_ops + n_swapin_ops) +
-            " ({} swap-out operations ({} GiB) and ".format(
+            " ({} swap-out operations ({} GiB) and".format(
                 n_swapout_ops, round(swapout_size/1024/1024/1024, 2)) +
             " {} swap-in operations ({} GiB))".format(
                 n_swapin_ops, round(swapin_size/1024/1024/1024, 2)))
@@ -1176,25 +1178,33 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
     def _print_configuration(self):
         """Print configuration information about LMS.
         """
-        self._log_info("swapout_threshold: {}".format(self._swapout_threshold))
-        if self._sync_mode == 1:
-            self._log_info(
-                "sync_mode was turned on for swap-out ops")
-            self._log_info("swapin_ahead: {}".format(self._swapin_ahead))
-            self._log_info("swapin_groupby: {}".format(self._swapin_groupby))
+        if self._autotune_mode:
+            self._log_info("LMS will use the latest parameter set found by Simulator for the best performance." +
+                           " However, if you encounter an out-of-memory error," +
+                           " please manually use the previous parameter set found by Simulator.")
+        else:
+            self._log_info("LMS will use the following parameter set:".format(self._swapout_threshold))
+        sync_mode_msg = ""
+        if self._sync_mode == 0:
+            sync_mode_msg = "Asynchronous memory copy between host and device"
+        elif self._sync_mode == 1:
+            sync_mode_msg = "Synchronous memory copy from device to host, but asynchronous memory copy from host to device"
         elif self._sync_mode == 2:
-            self._log_info(
-                "sync_mode was turned on for swap-in ops. " +
-                "swapin_ahead and swapin_groupby will be ignored")
-        elif self._sync_mode >= 3:
-            self._log_info(
-                "sync_mode was turned on for both swap-out and swap-in ops. " +
-                "swapin_ahead and swapin_groupby will be ignored")
-        elif self._sync_mode == 0:
-            self._log_info("swapin_ahead: {}".format(self._swapin_ahead))
-            self._log_info("swapin_groupby: {}".format(self._swapin_groupby))
+            sync_mode_msg = "Asynchronous memory copy from device to host, but synchronous memory copy from host to device"
+        elif self._sync_mode == 3:
+            sync_mode_msg = "Synchronous memory copy between host and device"
         else:
             pass
+        sync_mode_msg = '(' + sync_mode_msg + ')'
+        self._log_info("sync_mode: {} {}".format(self._sync_mode, sync_mode_msg), offset=2)
+
+        self._log_info("swapout_threshold: {}".format(self._swapout_threshold), offset=2)
+
+        sync_mode_msg = ""
+        if self._sync_mode in {2,3}:
+            sync_mode_msg = "(ignored since sync_mode is {})".format(self._sync_mode)
+        self._log_info("swapin_ahead: {} {}".format(self._swapin_ahead, sync_mode_msg), offset=2)
+        self._log_info("swapin_groupby: {} {}".format(self._swapin_groupby, sync_mode_msg), offset=2)
 
     def _get_control_outputs(self, op):
         """Return a set of control outputs of an operation.
