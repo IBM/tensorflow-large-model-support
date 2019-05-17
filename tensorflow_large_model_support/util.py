@@ -112,7 +112,7 @@ def get_tensor_size(ts, bs=None):
     """
     d, s = 1, 1  # `d` default value for i-th unknown dimension (i != 0)
     ndims = ts.shape.ndims
-    if ndims is None or ndims <= 1:
+    if ndims is None:
         return d
     for i in range(0, ndims):
         v = ts.shape[i].value
