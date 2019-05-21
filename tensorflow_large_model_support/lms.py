@@ -16,6 +16,7 @@ import os
 import time
 from math import floor
 
+from tensorflow.python.eager import context
 from tensorflow_large_model_support.simulator import Simulator
 from tensorflow_large_model_support import topos
 from tensorflow_large_model_support import util as ut
@@ -292,8 +293,12 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
 
         # the size of learning parameters
         learning_params_size = 0
+        self._log_info("Number of trainable variables {}".format(
+                       len(tf.trainable_variables())), 1)
         for v in tf.trainable_variables():
-            learning_params_size += ut.get_tensor_size(v, self._batch_size)
+            size = ut.get_tensor_size(v, self._batch_size)
+            self._log_info("Variable {} size {}".format(v, size), 1)
+            learning_params_size += size
 
         # find the largest GPU operation
         max_op, max_op_size = None, 0
@@ -1439,11 +1444,11 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 "parameter or set values for swapout_threshold, "
                 "swapin_ahead and swapin_groupby manually.")
         else:
-            if not self._is_lms_model(tf.get_default_graph()):
-                self.run(tf.get_default_graph(), True)
+            self._run_for_keras()
 
     # Implementation of `set_model` from from tf.keras.callbacks.Callback
     def set_model(self, model):
+        self._model = model
         if (self._autotune_enabled() and not self.batch_size and
                 self._model_has_placeholder_inputs(tf.get_default_graph())):
             # Here log a warning rather than error out because in the fit
@@ -1459,8 +1464,31 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                    'is received during a call to model.fit() on a new model.')
             tf.logging.warning(msg)
         else:
-            if not self._is_lms_model(tf.get_default_graph()):
-                self.run(tf.get_default_graph(), True)
+            self._run_for_keras()
+
+    def _run_for_keras(self):
+        if self._is_lms_model(tf.get_default_graph()):
+            return
+        if context.executing_eagerly():
+            self._log_info('Eager execution mode is not supported with '
+                           'TensorFlow Large Model Support.')
+            return
+
+        # Check if the model has the train_function created. If the train
+        # function is created, (Keras fit, fit_generator, TensorFlow Keras fit)
+        # paths, then the optimizer operations / backward phase operations are
+        # in the graph.
+        if getattr(self._model, 'train_function') is not None:
+            self.run(tf.get_default_graph(), True)
+        else:
+            # This is the tf.keras fit_generator path.
+            # The train_function has not been created, the graph is not
+            # "complete" yet because it will not have the optimizer and backward
+            # phases in it. We will create the train function now
+            # so the model is fully populated for running LMS on it.
+            self._log_info('Calling model._make_train_function()', 1)
+            self._model._make_train_function()
+            self.run(tf.get_default_graph(), True)
 
     def _log_level_sizes(self):
         """Log the memory consuming sizes of the valid GPU operations in each
