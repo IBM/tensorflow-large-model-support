@@ -255,7 +255,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
     def autotune_plot(self, val):
         self._autotune_plot = val
 
-    def run(self, graph, keras=False):
+    def run(self, graph=None, keras=False):
         """Edit the graph by adding swapin and swapout ops.
 
         Swapin and swapout ops are in the host.
@@ -270,10 +270,11 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
           a set of added ops.
         """
 
-        if not graph:
-            raise ValueError('The dataflow graph is required but has not been'
-                             ' provided.')
-        self._graph = graph
+        if graph is None:
+            self._graph = tf.get_default_graph()
+            self._log_info("No graph provided. LMS will use the default graph.")
+        else:
+            self._graph = graph
         self._is_keras = keras
         self._version = self._graph.version
 
@@ -315,7 +316,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             "The graph has {} vertices and {} edges.".format(
                 len(all_ops), n_edges)
         )
-        self._log_info("The graph has {} MiB of learning parameters".format(
+        self._log_info("The graph has {} MiB of learning parameters.".format(
             round(learning_params_size/1024/1024, 2)), 0)
         if max_op is not None:
             self._log_info(
@@ -328,7 +329,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         # build a topological sort
         self._topo_sort = topos.TOPOS(self._graph)
         self._topo_sort.build()
-        self._log_info("Original categorized topological sort has {} levels".format(
+        self._log_info("Original categorized topological sort has {} levels.".format(
             self._topo_sort.size))
         self._log_level_sizes()
         # exclude cpu ops, ops in other GPUs, ops in other learning mode
@@ -359,7 +360,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                            offset=2)
             self._topo_sort.serialize_for(
                 self._serialization, min=m, excl_ops=excl_ops)
-            self._log_info("New categorized topological sort has {} levels".format(
+            self._log_info("New categorized topological sort has {} levels.".format(
                 self._topo_sort.size), offset=2)
             self._rebuild_control_outputs(True)  # force rebuilding
 
@@ -934,7 +935,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                        "swapin_groupby and sync_mode. ")
         if self._autotune_plot:
             self._log_info("Figures of memory consumption will be generated " +
-                           "in directory {}".format(self._lms_dir))
+                           "in directory {}.".format(self._lms_dir))
         mem_ratio_default = 0.9
         if "DDL_OPTIONS" in os.environ:
             mem_ratio_default = 0.8

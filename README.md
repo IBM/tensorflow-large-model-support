@@ -15,14 +15,14 @@ following guidelines cover three ways to train:
 ```python
 from tensorflow_large_model_support import LMS
 lms_obj = LMS()
-lms_obj.run(tf.get_default_graph())
+lms_obj.run()
 ```
 The above lines must be put before starting a training session, for example:
 ```python
 # Import and run the graph modification before running a session:
 from tensorflow_large_model_support import LMS
 lms_obj = LMS()
-lms_obj.run(tf.get_default_graph())
+lms_obj.run()
 
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
@@ -71,7 +71,7 @@ An working example of LMS integration with Keras based training is:
 `examples/Keras_ResNet50.py`.
 
 
-### Parameters for LMS
+### Parameters for the LMS constructor
 _swapout_threshold_: the smaller `swapout_threshold` is, the more tensors are swapped out to the host memory. Default `-1` (auto mode).
 
 _swapin_ahead_: the larger `swapin_ahead` is, the earlier a tensor is swapped in to the GPU memory from the host memory. Default `-1` (auto mode).
@@ -88,6 +88,10 @@ _debug_ :: Debug mode for LMS. Default `False`.
 
 _debug_level_ :: Debug level for LMS (1 or 2). Default `1`.
 
+### Parameters for the method `run`
+_graph_: a computational graph that will be modified by LMS. Default `tensorflow.get_default_graph()`.
+_keras_: whether the computational graph is a Keras model or not. Default `False`.
+
 ### Auto tuning
 If parameters `swapout_threshold`, `swapin_ahead`, `swapin_groupby` are set to
 the default values, we will enable auto tuning to automatically find suitable
@@ -101,7 +105,7 @@ specified manually as follows:
 from tensorflow_large_model_support import LMS
 lms = LMS()
 lms.batch_size = 32
-lms.run(tf.get_default_graph())
+lms.run()
 ```
 
 ### Performance Tuning LMS
