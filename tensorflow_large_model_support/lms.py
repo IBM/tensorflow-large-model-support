@@ -301,10 +301,13 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             self._log_info("Variable {} size {}".format(v, size), 1)
             learning_params_size += size
 
-        # find the largest GPU operation
+        # find the largest GPU operation and detect a while-loop
         max_op, max_op_size = None, 0
+        has_while = False
         n_edges = 0
         for op in all_ops:
+            if (not has_while) and "while/" in op.name:
+                has_while = True
             if self._is_valid_op(op) and ut.is_gpu_op(op, self._gpu_device):
                 op_size = ut.get_op_size(op, self._batch_size)
                 if op_size > max_op_size:
@@ -322,6 +325,13 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             self._log_info(
                 "The largest GPU operation is {}".format(max_op.name) +
                 " consuming {} GiB".format(round(max_op_size/1024/1024/1024, 2)))
+        if has_while:
+            self._log_info("The graph has a while-loop. Please enable GPU-CPU memory" +
+                           " swap for the loop by setting swap_memory=True. For more information, visit" +
+                           " https://www.tensorflow.org/api_docs/python/tf/while_loop.")
+            if self._autotune_enabled():
+                raise ValueError("Auto-tuning does not work since the graph has a while-loop." +
+                                 " Please set LMS parameters manually.")
 
         # build a control output topology
         self._control_outputs = ut.build_control_outputs(self._graph)
@@ -874,6 +884,10 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 if ("/cond/" in op.name and
                     op.type not in {"Merge", "Switch"}):
                     continue
+                # ops must be not in a while-loop scope
+                if ("while/" in op.name and
+                    op.type not in {"Exit", "Enter"}):
+                    continue
                 cands.add(op)
 
             if cands:
@@ -1342,6 +1356,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             if ((op.type in cands) and (op.get_attr("is_training") != is_training)):
                 inactive_ops.add(op)
                 continue
+            # Ops inside a while-loop except Enter/Exit ops.
+            if ("while/" in op.name and op.type not in {"Enter", "Exit"}):
+                inactive_ops.add(op)
             # Ops inside a Switch (if-then-else)
             if keras:
                 if (op.type in {"PlaceholderWithDefault"} and

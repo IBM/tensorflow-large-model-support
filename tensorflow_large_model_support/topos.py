@@ -37,7 +37,32 @@ class TOPOS(object):
 
         dep_dict = {}
         for op in self._graph.get_operations():
-            dep_dict[op] = ut.fanins(op) | set(op.control_inputs)
+            in_ops = ut.fanins(op) | set(op.control_inputs)
+            # for the while-loop,
+            # - only follow the path: Enter -> Merge -> Switch -> Exit, and
+            # - avoid its main loop.
+            op_name = op.name
+            op_type = op.type
+            if "while/" in op_name:
+                if op_type == "Enter":
+                    pass
+                elif op_type == "Merge":
+                    # exclude in-comming ops that belong to the main loop.
+                    # These ops are NextIteration ops.
+                    in_ops = {x for x in in_ops
+                              if x.type !=  "NextIteration"}
+                    pass
+                elif op_type == "Switch":
+                    # exclude in-comming ops that belong to the main loop.
+                    # These ops are LoopCond ops.
+                    in_ops = {x for x in in_ops
+                              if x.type != "LoopCond"}
+                    pass
+                elif op_type == "Exit":
+                    pass
+                else:
+                    continue
+            dep_dict[op] = in_ops
 
         # build a categorized topological sort
         while True:
