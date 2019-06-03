@@ -20,6 +20,7 @@ from __future__ import print_function
 import numpy as np
 import tempfile  # Change not related to LMS
 import tensorflow as tf
+from tensorflow.core.protobuf import rewriter_config_pb2
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -131,9 +132,13 @@ def main(unused_argv):
   graph_location = tempfile.mkdtemp()
   print('Saving graph to: %s' % graph_location)
 
+  # Disable dependency optimization for TensorFlow 1.14
+  config = tf.ConfigProto()
+  config.graph_options.rewrite_options.dependency_optimization = rewriter_config_pb2.RewriterConfig.OFF
+  run_config = tf.estimator.RunConfig(session_config=config)
   # Create the Estimator
   mnist_classifier = tf.estimator.Estimator(
-      model_fn=cnn_model_fn, model_dir=graph_location)
+      model_fn=cnn_model_fn, model_dir=graph_location, config=run_config)
 
   # Set up logging for predictions
   # Log the values in the "Softmax" tensor with label "probabilities"

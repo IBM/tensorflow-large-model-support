@@ -30,6 +30,7 @@ import argparse
 import sys
 import tempfile
 
+from tensorflow.core.protobuf import rewriter_config_pb2
 from tensorflow.examples.tutorials.mnist import input_data
 
 import tensorflow as tf
@@ -162,7 +163,11 @@ def main(_):
   train_writer = tf.summary.FileWriter(graph_location)
   train_writer.add_graph(tf.get_default_graph())
 
-  with tf.Session() as sess:
+  # Disable dependency optimization for TensorFlow 1.14
+  config = tf.ConfigProto()
+  config.graph_options.rewrite_options.dependency_optimization = rewriter_config_pb2.RewriterConfig.OFF
+
+  with tf.Session(config=config) as sess:
     sess.run(tf.global_variables_initializer())
     for i in range(20000):
       batch = mnist.train.next_batch(50)
