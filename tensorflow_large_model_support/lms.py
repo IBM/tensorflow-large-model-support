@@ -165,9 +165,13 @@ class LMS(object):
             ops_for_scope = set(ge.filter_ops_from_regex(
                 ge.make_list_of_op(self._graph), "^{}".format(scope)))
             if not ops_for_scope:
-                raise ValueError('No operations were found with optimizer '
-                                 'scope {}.'.format(scope))
+                self._log_info('No operations were found with optimizer '
+                               'scope {}.'.format(scope))
             self._grad_ops.update(ops_for_scope)
+        if not self._grad_ops:
+            raise ValueError('No operations were found with optimizer '
+                             'scopes {}.'.format(self._optimizer_scopes))
+
 
     def _get_seed_ops(self):
         """Return a list of `tf.Operation` used as a starting point for LMS
@@ -949,7 +953,23 @@ class LMSKerasCallback(tf.keras.callbacks.Callback):
         optimizer_scopes = self._optimizer_scopes
         if not self._optimizer_scopes:
             optimizer_name = self.model.optimizer.__class__.__name__
-            optimizer_scopes = {'training/'+optimizer_name+'/gradients'}
+            # TensorFlow pre-1.14 uses the 'training/' name scope.
+            # TensorFlow 1.14 optimizer operations do not have the prepended
+            # 'training/'.
+            optimizer_scopes = {'training/'+optimizer_name+'/gradients',
+                                optimizer_name+'/gradients'}
+
+        # Check if the model has the train_function created. If the train
+        # function is created, (Keras fit, fit_generator, TensorFlow Keras fit)
+        # paths, then the optimizer operations / backward phase operations are
+        # in the graph.
+        if getattr(model, 'train_function') is None:
+            # This is the tf.keras fit_generator path for TensorFlow 1.14.
+            # The train_function has not been created, the graph is not
+            # "complete" yet because it will not have the optimizer and backward
+            # phases in it. We will create the train function now
+            # so the model is fully populated for running LMS on it.
+            model._make_train_function()
 
         lmsMod = LMS(optimizer_scopes,
                      graph=tf.get_default_graph(),

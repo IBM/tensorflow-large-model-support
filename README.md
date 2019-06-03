@@ -106,22 +106,50 @@ model.fit_generator(generator=training_gen, callbacks=[lms_callback])
 For a working example of LMS integration with Keras based training see:
 `examples/Keras_ResNet50.py`.
 
+### TensorFlow Grappler and TensorFlow Large Model Support
+
+Starting in TensorFlow 1.14, the dependency optimizer in TensorFlow's
+Grappler removes TensorFlow Large Model Support identity swapping nodes. To
+avoid this, that optimizer must be disabled. Here is an example of how to
+do this with a Keras model:
+```python
+import tensorflow as tf
+from tensorflow.core.protobuf import rewriter_config_pb2
+from tensorflow.python.keras import backend as K
+config = tf.ConfigProto()
+config.graph_options.rewrite_options.dependency_optimization = rewriter_config_pb2.RewriterConfig.OFF
+K.set_session(tf.Session(config=config))
+```
+
+TensorFlow has a mechanism for memory optimization. Though the mechanism can
+coexist with this module, it is recommended to switch its mode to
+`SCHEDULING_HEURISTICS` to allow training as large a model as possible. This
+can be done via the following snippet code:
+```python
+config = tf.ConfigProto()
+config.graph_options.rewrite_options.memory_optimization = \
+	rewriter_config_pb2.RewriterConfig.SCHEDULING_HEURISTICS
+```
+
 ### Scaling tips
 
 If scaling to multiple GPUs is achieved by building the model
 in a multi-tower fashion with a tower for each GPU as described in the [TensorFlow documentation](https://www.tensorflow.org/guide/using_gpu),
-you must also set and tune the `TF_CUDA_HOST_MEM_LIMIT_IN_MB` environment variable.
+you must also set and tune the `TF_CUDA_HOST_MEM_LIMIT_IN_MB` environment
+variable (`TF_GPU_HOST_MEM_LIMIT_IN_MB` in TensorFlow 1.14).
 
 TensorFlow sets a limit on the amount of memory that will be allocated on
 the CUDA host (CPU) side. The limit is often not high enough to act as a tensor
 swap space for multiple GPUs. Failure to set this limit higher will result
 in out of memory errors like this: `Allocator (cuda_host_bfc) ran out of memory trying to allocate`.
 Note the `cuda_host_bfc` allocator is mentioned rather than a GPU allocator.
+Note in TensorFlow 1.14 this host side allocator name changed to `gpu_host_bfc`.
 
 A good rule of thumb would be to start with a value that is 4 times the memory
 capacity of the GPUs times the number of GPUs that will be used.  For example,
 if you have four 16 GB GPUs in a system and will use all four in a training run,
-`TF_CUDA_HOST_MEM_LIMIT_IN_MB` should be set to 262144 and adjust from there
+`TF_CUDA_HOST_MEM_LIMIT_IN_MB` (`TF_GPU_HOST_MEM_LIMIT_IN_MB` in
+	TensorFlow 1.14) should be set to 262144 and adjust from there
 as needed. (4 x 16384 (16GB as MB) x 4 GPUs) = 262144 MB.
 
 
@@ -207,18 +235,6 @@ subsequent runs.
 
 It is recommended that you start with tuning training on a single GPU before
 enabling your code for multi-GPU with DDL.
-
-### TensorFlow Grappler and TensorFlow Large Model Support
-
-TensorFlow has a mechanism for memory optimization. Though the mechanism can
-coexist with this module, it is recommended to switch its mode to
-`SCHEDULING_HEURISTICS` to allow training as large a model as possible. This
-can be done via the following snippet code:
-```python
-config = tf.ConfigProto()
-config.graph_options.rewrite_options.memory_optimization = \
-	rewriter_config_pb2.RewriterConfig.SCHEDULING_HEURISTICS
-```
 
 ### Example of TensorFlow Large Model Support with Large Data and Tuning
 

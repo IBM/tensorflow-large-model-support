@@ -120,9 +120,10 @@ def get_callbacks(args):
     return callbacks
 
 def run_model(args):
-    # Configure the memory optimizer
+    # Configure the memory optimizer and dependency optimizers
     config = tf.ConfigProto()
     config.graph_options.rewrite_options.memory_optimization = rewriter_config_pb2.RewriterConfig.SCHEDULING_HEURISTICS
+    config.graph_options.rewrite_options.dependency_optimization = rewriter_config_pb2.RewriterConfig.OFF
     K.set_session(tf.Session(config=config))
 
     image_dim = args.image_size
