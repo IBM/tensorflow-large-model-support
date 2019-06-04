@@ -4,6 +4,8 @@ This library provides an approach to training large models that cannot be fit in
 It takes a computational graph defined by users, and automatically adds swap-in and swap-out nodes for transferring tensors from GPUs to the host and vice versa.
 The computational graph is statically modified. Hence, it needs to be done before a session actually starts.
 
+IBM PowerAI 1.6 contains a newer implementation of TensorFlow Large Model Support than the version that is contained in this repository. The newer version is easier to use and can achieve greater levels of tensor swapping which can lead to higher resolutions, deeper models, or larger batch sizes. For more information see [What’s new in PowerAI 1.6 TensorFlow Large Model Support](https://developer.ibm.com/linuxonpower/2019/05/17/whats-new-in-powerai-1-6-tensorflow-large-model-support/).
+
 ## Install
 TensorFlow Large Model Support can be installed as a pip module named
 `tensoflow-large-model-support`. To install
