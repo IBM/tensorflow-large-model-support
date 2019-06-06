@@ -160,7 +160,7 @@ def main(_):
   # that TFLMS is not needed and disable it.
   lms_model = LMS(swapout_threshold=50, swapin_ahead=3, swapin_groupby=2)
   lms_model.excl_output_by_scopes = {'loss', 'accuracy', 'dropout'}
-  lms_model.run(tf.get_default_graph())
+  lms_model.run()
 
   graph_location = tempfile.mkdtemp()
   print('Saving graph to: %s' % graph_location)
@@ -177,12 +177,12 @@ def main(_):
         print('step %d, training accuracy %g' % (i, train_accuracy))
       train_step.run(feed_dict={x: batch[0], y_: batch[1], keep_prob: 0.5})
 
-    # compute in batches to avoid OOM on GPUs 
+    # compute in batches to avoid OOM on GPUs
     accuracy_l = []
     for _ in range(20):
       batch = mnist.test.next_batch(500, shuffle=False)
-      accuracy_l.append(accuracy.eval(feed_dict={x: batch[0], 
-                                                 y_: batch[1], 
+      accuracy_l.append(accuracy.eval(feed_dict={x: batch[0],
+                                                 y_: batch[1],
                                                  keep_prob: 1.0}))
     print('test accuracy %g' % numpy.mean(accuracy_l))
 
