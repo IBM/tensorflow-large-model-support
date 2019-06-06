@@ -13,6 +13,7 @@
 import time
 from functools import wraps
 import tensorflow as tf
+from tensorflow.core.framework import attr_value_pb2
 
 
 def fanins(op):
@@ -162,3 +163,8 @@ def get_op_size(op, batch_size):
     for ts in op.outputs:
         op_size += get_tensor_size(ts, batch_size)
     return op_size
+
+
+def protect_op_from_optimizers(op):
+    op._set_attr('_grappler_do_not_remove',
+                 attr_value_pb2.AttrValue(b=True))

@@ -670,6 +670,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         """
         # create a swap_out node
         swapout_op = self._add_swapout(src_op, ts)
+        ut.protect_op_from_optimizers(swapout_op)
         self._add_control_inputs(swapout_op, src_op, offset=4)
 
         # create swap_in nodes
@@ -677,6 +678,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         for dest_ops in targets:
             # swap_in op
             swapin_op = self._add_swapin(swapout_op, dest_ops, ts)
+            ut.protect_op_from_optimizers(swapin_op)
             # for control dependency
             dest_op = self._get_earliest_op(dest_ops)
             sin_dest.add((swapin_op, dest_op))
@@ -771,6 +773,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             ut.reroute_input(swap_in.op.outputs[0], ts0, dest_op)
             self._log_info("Connect: {} => {}".format(
                 swap_in.op.name, dest_op.name), 1, 4)
+
         return swap_in.op
 
     def _add_control_dependencies(self):
