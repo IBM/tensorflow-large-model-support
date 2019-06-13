@@ -1,3 +1,5 @@
+# This code is based on this Keras example:
+#  https://github.com/keras-team/keras/blob/2.2.4/examples/mnist_cnn.py
 # Copyright 2018, 2019. IBM All Rights Reserved.
 '''Trains a simple convnet on the MNIST dataset.
 

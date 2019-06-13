@@ -1,3 +1,5 @@
+# This code is based on this Keras example:
+#  https://github.com/keras-team/keras/blob/2.2.4/examples/mnist_cnn.py
 '''Trains a simple convnet on the MNIST dataset.
 
 Gets to 99.25% test accuracy after 12 epochs
