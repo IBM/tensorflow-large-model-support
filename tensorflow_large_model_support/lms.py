@@ -123,8 +123,13 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
 
         # AutoTune
         self._autotune_mode = False
-        self._batch_size = None
+        # Set memory size for auto-tuning, in GiB.
+        # otherwise, the actual GPU memory is used.
+        self._autotune_gpu_mem = None
         self._autotune_plot = False
+
+        # This is used to estimate the size of a tensor.
+        self._batch_size = None
 
         # https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/framework/graph_util_impl.py
         self._variable_ops = {
@@ -246,6 +251,14 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
     @batch_size.setter
     def batch_size(self, val):
         self._batch_size = val
+
+    @property
+    def autotune_gpu_mem(self):
+        return self._autotune_gpu_mem
+
+    @autotune_gpu_mem.setter
+    def autotune_gpu_mem(self, val):
+        self._autotune_gpu_mem = val
 
     @property
     def autotune_plot(self):

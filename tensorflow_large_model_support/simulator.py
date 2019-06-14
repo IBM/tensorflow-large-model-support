@@ -66,6 +66,7 @@ class Simulator(object):
         self._distance = self._lms._distance
         self._batch_size = self._lms._batch_size
         self._gpu_device = self._lms._gpu_device
+        self._autotune_gpu_mem = self._lms._autotune_gpu_mem
 
         # aliases, methods
         self._groupby = self._lms._groupby
@@ -84,8 +85,12 @@ class Simulator(object):
     def _initialize(self):
         """Initialize some variables
         """
-        with tf.Session(graph=tf.Graph()) as sess:
-            self._max_mem = sess.run(memory_stats_ops.BytesLimit())
+        if self._autotune_gpu_mem:
+            self._max_mem = self._autotune_gpu_mem * 1024 * 1024 * 1024
+        else:
+            with tf.Session(graph=tf.Graph()) as sess:
+                self._max_mem = sess.run(memory_stats_ops.BytesLimit())
+
         # exclude memories for variables
         learning_params_size = 0
         self._trainable_vars = tf.trainable_variables()
@@ -93,6 +98,7 @@ class Simulator(object):
             var_size = self._ts_size(v)
             self._max_mem -= var_size
             learning_params_size += var_size
+
         # use only `ratio` percent of the available memory
         self._max_mem *= self._ratio
         self._log_info("Available memory for simulation: {} GiB".format(
