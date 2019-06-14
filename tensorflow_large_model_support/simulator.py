@@ -189,6 +189,7 @@ class Simulator(object):
             if self._plot:
                 self._generate_diagram(threshold, ahead, groupby, sync_mode)
 
+        self._log_info("The remaining memory: {}".format(self._mem))
         return passed
 
     def _simulate_op(self, k, op, threshold, ahead, groupby, sync_mode):
@@ -212,7 +213,7 @@ class Simulator(object):
             else:
                 if ts_name not in self._mem:
                     ts_size = self._ts_size(ts)
-                    lifetime = len(ts.consumers())
+                    lifetime = len(set(ts.consumers()))
                     ok = self._allocate(ts_name, ts_size, lifetime)
                     if not ok:
                         passed = False
@@ -222,7 +223,7 @@ class Simulator(object):
         # allocate memory for outputs
         for ts in out_tensors:
             ts_name = ts.name
-            consumers = ts.consumers()
+            consumers = set(ts.consumers())
             n_consumers = len(consumers)
             # do not allocate memory for tensors that are not consumed by
             # ops in this GPU device
@@ -300,6 +301,7 @@ class Simulator(object):
         dest_ops = self._filter_by_dest_ops(dest_ops)
         if not dest_ops:
             return
+        dest_ops = set(dest_ops)
         # swapout tensors will be collected later
         latest_op = self._get_latest_op({
             x for x in set(ts.consumers()) - dest_ops})
@@ -362,6 +364,7 @@ class Simulator(object):
                 ts_size, ts_name,
                 self._used_mem,
                 self._get_free_mem()))
+
         return succeed
 
     def _release(self, ts_name):
@@ -430,14 +433,14 @@ class Simulator(object):
     def _create_swapin_name(self, ts, dests):
         """Create a name for a swap-in tensor.
         """
-        s = ts.name + "_" + "_".join(x.name for x in dests)
+        s = ts.name + ";" + ";".join(x.name for x in dests) + ";"
         return s
 
     def _is_swapin_tensor(self, ts_name, op_name):
         """Check if the tensor is a swapin tensor AND already swapped in.
         """
         for s in self._swapins:
-            if ts_name in s and op_name in s and s in self._mem:
+            if (ts_name + ";") in s and (";" + op_name + ";") in s and s in self._mem:
                 return (True, s)
         return (False, ts_name)
 
