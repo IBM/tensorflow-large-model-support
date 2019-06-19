@@ -13,6 +13,7 @@
 """
 
 import os
+from distutils.version import StrictVersion
 
 import tensorflow as tf
 from tensorflow.contrib.memory_stats.python.ops import memory_stats_ops
@@ -39,17 +40,25 @@ class Simulator(object):
         self._trainable_vars = None
         # memory limitation
         self._max_mem = 0
+        self._max_cpu_mem = 0
+        self._cpu_mem_warning = False
 
         # the following variables need to be reset before each play()
         # memory to store tensors
         self._mem = {}
         # used memory at a given time
         self._used_mem = 0
+        self._used_cpu_mem = 0
+        self._max_used_cpu_mem = 0
         # traces of used memory
         self._mem_traces = []
+        self._mem_traces_cpu = {}
+        self._mem_traces_step = 0
         # each tensor has a ref_count showing how many ops will consume it
         self._ref_counts = {}
         self._dead_ref_counts = set()
+        self._ref_counts_cpu = {}
+        self._dead_ref_counts_cpu = set()
         # simulated ops
         self._simulated_ops = set()
         # keep tensors that were swapped out
@@ -104,6 +113,9 @@ class Simulator(object):
         self._log_info("Available memory for simulation: {} GiB".format(
             round(self._max_mem/1024/1024/1024, 2)) +
                        " (memory ratio: {})".format(self._ratio), 0)
+        self._max_cpu_mem = self._get_max_cpu_mem_size()
+        self._log_info("Available CPU memory for simulation: {} GiB".format(
+            round(self._max_cpu_mem/1024/1024/1024, 2)), 0)
 
     def _reset(self):
         """Reset memory to the initial state.
@@ -113,10 +125,21 @@ class Simulator(object):
         self._mem_traces = []
         self._ref_counts = {}
         self._dead_ref_counts = set()
+
+        self._cpu_mem = {}
+        self._used_cpu_mem = 0
+        self._max_used_cpu_mem = 0
+        self._mem_traces_cpu = {}
+        self._ref_counts_cpu = {}
+        self._mem_traces_step = 0
+        self._dead_ref_counts_cpu = set()
+
         self._simulated_ops = set()
         self._swapouts = {}
         self._swapins = set()
         self._ctrl_inputs = {}
+
+        self._cpu_mem_warning = False
 
     # @ut.measure_time
     def play(self, threshold, ahead, groupby, sync_mode):
@@ -154,7 +177,7 @@ class Simulator(object):
                     if not ok:
                         passed = False
                         if not self._plot:
-                            return passed
+                            return passed, self._cpu_mem_warning
 
                 # finish simulating this ops
                 self._simulated_ops.add(op)
@@ -175,7 +198,7 @@ class Simulator(object):
                 if not ok:
                     passed = False
                     if not self._plot:
-                        return passed
+                        return passed, self._cpu_mem_warning
 
             self._log_info("[{}] available memory {}".format(
                 k, self._get_free_mem()))
@@ -186,17 +209,28 @@ class Simulator(object):
         if passed:
             if self._plot:
                 self._generate_diagram(threshold, ahead, groupby, sync_mode)
-            self._log_info("Found a parameter set: " +
-                           "swapout_threshold {}".format(threshold) +
-                           ", swapin_ahead {}".format(ahead) +
-                           ", swapin_groupby {}".format(groupby) +
-                           ", sync_mode {}".format(sync_mode), 0)
+            if self._cpu_mem_warning:
+                max_used_cpu_mem_in_gb = round(self._max_used_cpu_mem/1024/1024/1024, 2)
+                self._log_info("Found a parameter set: " +
+                               "swapout_threshold {}".format(threshold) +
+                               ", swapin_ahead {}".format(ahead) +
+                               ", swapin_groupby {}".format(groupby) +
+                               ", sync_mode {} ".format(sync_mode) +
+                               "(Warning: likely to exceed host memory limit." +
+                               " {} GiB required)".format(max_used_cpu_mem_in_gb)
+                               , 0)
+            else:
+                self._log_info("Found a parameter set: " +
+                               "swapout_threshold {}".format(threshold) +
+                               ", swapin_ahead {}".format(ahead) +
+                               ", swapin_groupby {}".format(groupby) +
+                               ", sync_mode {}".format(sync_mode), 0)
         else:
             if self._plot:
                 self._generate_diagram(threshold, ahead, groupby, sync_mode)
 
         self._log_info("The remaining memory: {}".format(self._mem))
-        return passed
+        return passed, self._cpu_mem_warning
 
     def _simulate_op(self, k, op, threshold, ahead, groupby, sync_mode):
         in_tensors = set(op.inputs)
@@ -279,6 +313,10 @@ class Simulator(object):
             ts_name, ts_size, lifetime = nsl
             self._log_info("[{}] swapped in {}".format(k, ts_name))
             ok = self._allocate(ts_name, ts_size, lifetime)
+            ts_name_src = ts_name.split(';')[0]
+            self._update_ref_counts_cpu(ts_name_src, -1)
+            self._log_info("CPU swapped data: {} ref_counts: {} "
+                           .format(ts_name_src, self._ref_counts_cpu[ts_name_src]))
             if not ok:
                 passed = False
                 if not self._plot:
@@ -342,6 +380,8 @@ class Simulator(object):
             else:
                 self._ctrl_inputs[ctrl_op] = {ts_info}
             self._swapins.add(s)
+        # allocate swapout tensors
+        self._allocate_cpu(ts_name, ts_size, len(dests_grp))
 
     def _allocate(self, ts_name, ts_size, lifetime):
         """Allocate memory for tensor `ts`.
@@ -365,6 +405,7 @@ class Simulator(object):
         self._mem[ts_name] = ts_size
         self._update_ref_counts(ts_name, lifetime, override=True)
         self._mem_traces.append(self._used_mem)
+        self._mem_traces_step += 1
         self._log_info(
             "allocated {} bytes for {}, used {}, free {}".format(
                 ts_size, ts_name,
@@ -381,11 +422,62 @@ class Simulator(object):
         self._delete_ref_counts(ts_name)
         self._used_mem -= ts_size
         self._mem_traces.append(self._used_mem)
+        self._mem_traces_step += 1
         self._log_info(
             "released {} bytes taken by {}, used {}, free {}".format(
                 ts_size, ts_name,
                 self._used_mem,
                 self._get_free_mem()))
+
+    def _release_cpu(self, ts_name):
+        """Release CPU memory taken by tensor `ts`.
+        """
+        ts_size = self._cpu_mem[ts_name]
+        del self._cpu_mem[ts_name]
+        self._delete_ref_counts_cpu(ts_name)
+        self._used_cpu_mem -= ts_size
+        self._mem_traces_cpu[self._mem_traces_step] = self._used_cpu_mem
+        self._log_info(
+            "CPU released {} bytes taken by {}, used {}, free {}".format(
+                ts_size, ts_name,
+                self._used_cpu_mem,
+                self._get_free_cpu_mem()))
+
+    def _allocate_cpu(self, ts_name, ts_size, lifetime):
+        """Allocate CPU memory for tensor `ts`.
+
+        Return:
+          True if successfully. Otherwise, False.
+        """
+        succeed = True
+        if (ts_size >= self._get_free_cpu_mem()):
+            # succeed flag is disabled for now to continue simulation.
+            # Insted, self._cpu_mem_warning is used for warning message.
+            # succeed = False
+            self._cpu_mem_warning = True
+            # out of memory
+            self._log_info(
+                "CPU OOM tensor {}, size {}, used {}, free {}".format(
+                    ts_name, ts_size,
+                    self._used_cpu_mem,
+                    self._get_free_cpu_mem()))
+            # succeed flag is disabled for now to continue simulation.
+            # if not self._plot:
+            #    return succeed
+
+        # allocate
+        self._used_cpu_mem += ts_size
+        if self._used_cpu_mem > self._max_used_cpu_mem:
+            self._max_used_cpu_mem = self._used_cpu_mem
+        self._cpu_mem[ts_name] = ts_size
+        self._update_ref_counts_cpu(ts_name, lifetime, override=True)
+        self._mem_traces_cpu[self._mem_traces_step] = self._used_cpu_mem
+        self._log_info(
+            "CPU allocated {} bytes for {}, used {}, free {}".format(
+                ts_size, ts_name,
+                self._used_cpu_mem,
+                self._get_free_cpu_mem()))
+        return succeed
 
     def _gc(self):
         """Simulate TensorFlow garbage collection.
@@ -395,10 +487,29 @@ class Simulator(object):
             ts_name = next(iter(self._dead_ref_counts))
             self._release(ts_name)
 
+        while len(self._dead_ref_counts_cpu) > 0:
+            ts_name = next(iter(self._dead_ref_counts_cpu))
+            self._release_cpu(ts_name)
+
     def _get_free_mem(self):
         """Return the available memory
         """
         return self._max_mem - self._used_mem
+
+    def _get_free_cpu_mem(self):
+        """Return the available CPU memory
+        """
+        return self._max_cpu_mem - self._used_cpu_mem
+
+    def _get_max_cpu_mem_size(self):
+        default_cpu_mem_in_mb = 64 * 1024
+        if tf.__version__ >= StrictVersion("1.14"):
+            max_cpu_mem_in_mb = int(os.getenv('TF_GPU_HOST_MEM_LIMIT_IN_MB',
+                                               str(default_cpu_mem_in_mb)))
+        else:
+            max_cpu_mem_in_mb = int(os.getenv('TF_CUDA_HOST_MEM_LIMIT_IN_MB',
+                                               str(default_cpu_mem_in_mb)))
+        return max_cpu_mem_in_mb * 1024 * 1024
 
     def _generate_diagram(self, threshold, ahead, groupby, sync_mode):
         """Generate a diagram of memory consumption.
@@ -414,10 +525,24 @@ class Simulator(object):
                         ", swapin_ahead: {}".format(ahead) + \
                         ", swapin_groupby: {}".format(groupby) + \
                         ", sync_mode: {})".format(sync_mode)
-        plt.plot([m/(1e9) for m in self._mem_traces], label=label_str)
-        plt.title("Simulation of memory consumption")
-        plt.xlabel("Allocation/Deallocation steps")
-        plt.ylabel("GigaBytes")
+        # CPU
+        plt.subplot(2, 1, 1)
+        plt.plot([k for k in self._mem_traces_cpu.keys()],
+                 [v/(1e9) for v in self._mem_traces_cpu.values()],
+                 label="CPU memory (Swapped data)")
+        plt.xlim(0, len(self._mem_traces))
+        plt.suptitle("Simulation of GPU/CPU memory consumption")
+        plt.title(label_str, fontsize=10)
+        plt.ylabel("GigaBytes (CPU)")
+        plt.legend(loc='upper left', fontsize='x-small')
+        plt.grid(True)
+        # GPU
+        plt.subplot(2, 1, 2)
+        plt.plot([m/(1e9) for m in self._mem_traces],
+                 label="GPU memory")
+        plt.xlim(0, len(self._mem_traces))
+        plt.xlabel("Allocation/Deallocation steps (GPU)")
+        plt.ylabel("GigaBytes (GPU)")
         plt.legend(loc='upper left', fontsize='x-small')
         plt.grid(True)
         if not os.path.exists(self._lms_dir):
@@ -468,9 +593,24 @@ class Simulator(object):
             if ts_name in self._dead_ref_counts:
                 self._dead_ref_counts.remove(ts_name)
 
+    def _update_ref_counts_cpu(self, ts_name, value, override=False):
+        if override:
+            self._ref_counts_cpu[ts_name] = value
+        else:
+            self._ref_counts_cpu[ts_name] += value
+        if self._ref_counts_cpu[ts_name] == 0:
+            self._dead_ref_counts_cpu.add(ts_name)
+        else:
+            if ts_name in self._dead_ref_counts_cpu:
+                self._dead_ref_counts_cpu.remove(ts_name)
+
     def _delete_ref_counts(self, ts_name):
         del self._ref_counts[ts_name]
         self._dead_ref_counts.remove(ts_name)
+
+    def _delete_ref_counts_cpu(self, ts_name):
+        del self._ref_counts_cpu[ts_name]
+        self._dead_ref_counts_cpu.remove(ts_name)
 
     def _log_info(self, msg, level=-1, offset=0):
         if level >= 0:

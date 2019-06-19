@@ -15,6 +15,7 @@ import tensorflow as tf
 import os
 import time
 from math import floor
+from distutils.version import StrictVersion
 
 from tensorflow.python.eager import context
 from tensorflow_large_model_support.simulator import Simulator
@@ -127,6 +128,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         # otherwise, the actual GPU memory is used.
         self._autotune_gpu_mem = None
         self._autotune_plot = False
+        self._autotune_warning = False
+        self._max_used_cpu_mem = 0
 
         # This is used to estimate the size of a tensor.
         self._batch_size = None
@@ -939,19 +942,26 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                           threshold, ahead, groupby, sync_mode,
                           idx, early_stop=False):
             params = {1: threshold, 2: ahead, 3: groupby}
+            warning = False
             while L <= R:
                 m = int(floor((L+R)/2))
                 old_value = params[idx]
                 params[idx] = m
-                passed = sim.play(params[1], params[2], params[3], sync_mode)
+                old_warning = warning
+                warning = False
+                old_max_used_cpu_mem = self._max_used_cpu_mem
+                passed, warning = sim.play(params[1], params[2], params[3], sync_mode)
+                self._max_used_cpu_mem = sim._max_used_cpu_mem
                 if passed:
                     if early_stop:
                         break
                     L = m + 1
                 else:
                     params[idx] = old_value  # restore the previous value
+                    warning = old_warning
+                    self._max_used_cpu_mem = old_max_used_cpu_mem
                     R = m - 1
-            return params[idx]
+            return params[idx], warning
 
         # This prevents LMS auto tuning from re-running on Keras when the
         # model can train without LMS and  LMS is called in both
@@ -984,11 +994,13 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
 
         sim = Simulator(self, ratio=mem_ratio, debug_level=1,
                         plot=self._autotune_plot)
+
         if (self._swapout_threshold < 0
             and self._swapin_ahead < 0
             and self._swapin_groupby < 0):
             # check if we really need LMS or not
-            passed = sim.play(self._topo_sort.size, 1, 0, self._sync_mode)
+            passed, self._autotune_warning = sim.play(self._topo_sort.size, 1, 0, self._sync_mode)
+            self._max_used_cpu_mem = sim._max_used_cpu_mem
             if passed:
                 self._swapout_threshold = self._topo_sort.size
                 return
@@ -1002,9 +1014,10 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             ahead = 1 if self._swapin_ahead < 0 else self._swapin_ahead
             groupby = 0 if self._swapin_groupby < 0 else self._swapin_groupby
             while (not found_th):
-                passed = sim.play(threshold, ahead, groupby, sync_mode)
+                passed, self._autotune_warning = sim.play(threshold, ahead, groupby, sync_mode)
+                self._max_used_cpu_mem = sim._max_used_cpu_mem
                 if passed:
-                    self._swapout_threshold = binary_search(
+                    self._swapout_threshold, self._autotune_warning = binary_search(
                         sim, 1, self._topo_sort.size,
                         threshold, ahead, groupby, sync_mode, 1)
                     found_th = True
@@ -1026,11 +1039,12 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             ahead = 1
             groupby = 0 if self._swapin_groupby < 0 else self._swapin_groupby
             if not found_th:
-                passed = sim.play(threshold, ahead, groupby, self._sync_mode)
+                passed, self._autotune_warning = sim.play(threshold, ahead, groupby, self._sync_mode)
+                self._max_used_cpu_mem = sim._max_used_cpu_mem
             else:
                 passed = True
             if passed:
-                self._swapin_ahead = binary_search(
+                self._swapin_ahead, self._autotune_warning = binary_search(
                     sim, 1, self._topo_sort.size,
                     threshold, ahead, groupby, self._sync_mode, 2)
                 found_ah = True
@@ -1044,12 +1058,14 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             ahead = self._swapin_ahead
             groupby = 0
             if (not found_th) and (not found_ah):
-                passed = sim.play(threshold, ahead, groupby, self._sync_mode)
+                passed, self._autotune_warning = sim.play(threshold, ahead, groupby, self._sync_mode)
+                self._max_used_cpu_mem = sim._max_used_cpu_mem
             else:
                 passed = True
             if passed:
-                ok = sim.play(threshold, ahead, self._topo_sort.size,
+                ok, self._autotune_warning = sim.play(threshold, ahead, self._topo_sort.size,
                               self._sync_mode)
+                self._max_used_cpu_mem = sim._max_used_cpu_mem
                 if ok:
                     self._swapin_groupby = self._topo_sort.size
                 else:
@@ -1243,6 +1259,18 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             sync_mode_msg = "(ignored since sync_mode is {})".format(self._sync_mode)
         self._log_info("swapin_ahead: {} {}".format(self._swapin_ahead, sync_mode_msg), offset=2)
         self._log_info("swapin_groupby: {} {}".format(self._swapin_groupby, sync_mode_msg), offset=2)
+        if self._autotune_warning:
+            max_used_cpu_mem_in_mb = round(self._max_used_cpu_mem/1024/1024)
+            if tf.__version__ >= StrictVersion("1.14"):
+                self._log_info("Warning: This configuration is likely to hit an out of memory error "
+                               + "on the host allocator. It is recommended to increase the values of "
+                               + "the TF_GPU_HOST_MEM_LIMIT_IN_MB environment variable "
+                               + "to {} or more.".format(max_used_cpu_mem_in_mb), offset=2)
+            else:
+                self._log_info("Warning: This configuration is likely to hit an out of memory error "
+                               + "on the host allocator. It is recommended to increase the values of "
+                               + "the TF_CUDA_HOST_MEM_LIMIT_IN_MB enviromnent variable "
+                               + "to {} or more.".format(max_used_cpu_mem_in_mb), offset=2)
 
     def _get_control_outputs(self, op):
         """Return a set of control outputs of an operation.
