@@ -86,13 +86,46 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             `tf.device('/device:GPU:2'), LMS must be instantiated and run
             multiple times, once for each GPU.
         """
+        # Validate inputs
+        if not isinstance(swapout_threshold, (int)):
+            raise ValueError('Unsupported value for swapout_threshold: {}. '
+                             'swapout_threshold must be an integer'.format(swapout_threshold))
+
+        if not isinstance(swapin_groupby, (int)):
+            raise ValueError('Unsupported value for swapin_groupby: {}. '
+                             'swapin_groupby must be an integer'.format(swapin_groupby))
+
+        if not isinstance(swapin_ahead, (int)):
+            raise ValueError('Unsupported value for swapin_ahead: {}. '
+                             'swapin_ahead must be an integer'.format(swapin_ahead))
+
+        if not isinstance(sync_mode, (int)):
+            raise ValueError('Unsupported value for sync_mode: {}. '
+                             'sync_mode must be an integer'.format(sync_mode))
+
+        if not isinstance(serialization_by_size, (int)):
+            raise ValueError('Unsupported value for serialization_by_size: {}. '
+                             'serialization_by_size must be an integer'.format(serialization_by_size))
+
+        if not isinstance(debug_level, (int)):
+            raise ValueError('Unsupported value for debug_level: {}. '
+                             'debug_level must be an integer'.format(debug_level))
+
+        if swapout_threshold == 0:
+            raise ValueError('0 is not a supported value for swapout_threshold.')
+
+        if swapin_ahead == 0:
+            raise ValueError('0 is not a supported value for swapin_ahead.')
+
+        valid_sync_mode = {0, 1, 2, 3}
+        if sync_mode not in valid_sync_mode:
+            raise ValueError('Invalid value for sync_mode {}. '
+                             'Valid values are: {}'.format(sync_mode, valid_sync_mode))
+
         self._swapout_threshold = swapout_threshold
         self._swapin_groupby = swapin_groupby
         self._swapin_ahead = swapin_ahead
-        if sync_mode not in {0, 1, 2, 3}:
-            raise ValueError('Invalid value for sync_mode')
-        else:
-            self._sync_mode = sync_mode
+        self._sync_mode = sync_mode
         self._serialization = serialization
         self._serialization_by_size = serialization_by_size
         self._cpu_device = cpu_device
@@ -461,9 +494,11 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             (time.time()-start_time)*1000))
 
     def _autotune_enabled(self):
-        if (self._swapout_threshold < 0
-            or self._swapin_ahead < 0
-            or self._swapin_groupby < 0):
+        if (self._swapout_threshold > 0 and self._is_swapin_sync()):
+            return False
+        elif (self._swapout_threshold < 0
+              or self._swapin_ahead < 0
+              or self._swapin_groupby < 0):
             return True
         return False
 
