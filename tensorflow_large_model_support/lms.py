@@ -1104,7 +1104,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                 if ok:
                     self._swapin_groupby = self._topo_sort.size
                 else:
-                    self._swapin_groupby = binary_search(
+                    self._swapin_groupby, self._autotuning_warning = binary_search(
                         sim, 0, self._topo_sort.size,
                         threshold, ahead, groupby, self._sync_mode, 3,
                         early_stop=True)
