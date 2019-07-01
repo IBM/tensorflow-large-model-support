@@ -103,9 +103,11 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
             raise ValueError('Unsupported value for sync_mode: {}. '
                              'sync_mode must be an integer'.format(sync_mode))
 
-        if not isinstance(serialization_by_size, (int)):
+        if not (isinstance(serialization_by_size, int) or
+                isinstance(serialization_by_size, float)):
             raise ValueError('Unsupported value for serialization_by_size: {}. '
-                             'serialization_by_size must be an integer'.format(serialization_by_size))
+                             'serialization_by_size must be an integer'
+                             'or a float.'.format(serialization_by_size))
 
         if not isinstance(debug_level, (int)):
             raise ValueError('Unsupported value for debug_level: {}. '
