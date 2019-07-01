@@ -15,7 +15,7 @@ import tensorflow as tf
 import os
 import time
 from math import floor
-from distutils.version import StrictVersion
+from distutils.version import LooseVersion
 
 from tensorflow.python.eager import context
 from tensorflow_large_model_support.simulator import Simulator
@@ -1296,7 +1296,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         self._log_info("swapin_groupby: {} {}".format(self._swapin_groupby, sync_mode_msg), offset=2)
         if self._autotune_warning:
             max_used_cpu_mem_in_mb = round(self._max_used_cpu_mem/1024/1024)
-            if tf.__version__ >= StrictVersion("1.14"):
+            if tf.__version__ >= LooseVersion("1.14"):
                 self._log_info("Warning: This configuration is likely to hit an out of memory error "
                                + "on the host allocator. It is recommended to increase the values of "
                                + "the TF_GPU_HOST_MEM_LIMIT_IN_MB environment variable "

@@ -13,7 +13,7 @@
 """
 
 import os
-from distutils.version import StrictVersion
+from distutils.version import LooseVersion
 
 import tensorflow as tf
 from tensorflow.contrib.memory_stats.python.ops import memory_stats_ops
@@ -503,7 +503,7 @@ class Simulator(object):
 
     def _get_max_cpu_mem_size(self):
         default_cpu_mem_in_mb = 64 * 1024
-        if tf.__version__ >= StrictVersion("1.14"):
+        if tf.__version__ >= LooseVersion("1.14"):
             max_cpu_mem_in_mb = int(os.getenv('TF_GPU_HOST_MEM_LIMIT_IN_MB',
                                                str(default_cpu_mem_in_mb)))
         else:
