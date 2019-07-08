@@ -116,6 +116,10 @@ class Simulator(object):
         self._max_cpu_mem = self._get_max_cpu_mem_size()
         self._log_info("Available CPU memory for simulation: {} GiB".format(
             round(self._max_cpu_mem/1024/1024/1024, 2)), 0)
+        if self._batch_size:
+            self._log_info("Batch size used for simulation: {}".format(
+                self._batch_size, 0)
+
 
     def _reset(self):
         """Reset memory to the initial state.
