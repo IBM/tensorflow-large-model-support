@@ -724,7 +724,6 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         # create a swap_out node
         swapout_op = self._add_swapout(src_op, ts)
         ut.protect_op_from_optimizers(swapout_op)
-        self._add_control_inputs(swapout_op, src_op, offset=4)
 
         # create swap_in nodes
         sin_dest = set()
