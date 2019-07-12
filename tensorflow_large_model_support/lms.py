@@ -1592,6 +1592,9 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         """Log the memory consuming sizes of the valid GPU operations in each
         topological level.
         """
+        # Only calculate and log level sizes if debug logging is enabled
+        if not self._debug:
+            return
         # dict of level integer to cumulative size of level
         level_to_size = {}
 
