@@ -15,8 +15,8 @@
 import os
 from distutils.version import LooseVersion
 
-import tensorflow as tf
-from tensorflow.contrib.memory_stats.python.ops import memory_stats_ops
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
 from tensorflow_large_model_support import util as ut
 
@@ -97,9 +97,22 @@ class Simulator(object):
         if self._autotune_gpu_mem:
             self._max_mem = self._autotune_gpu_mem * 1024 * 1024 * 1024
         else:
-            with tf.Session(graph=tf.Graph()) as sess:
-                self._max_mem = sess.run(memory_stats_ops.BytesLimit())
-
+            # get the available GPU memory
+            from tensorflow.python.client import device_lib
+            local_device_protos = device_lib.list_local_devices()
+            local_gpu_devices = [(x.name, x.memory_limit)
+                                 for x in device_lib.list_local_devices()
+                                 if x.device_type == 'GPU']
+            if self._gpu_device:
+                current_device = None
+                for name, mem in local_gpu_devices:
+                    if name.upper() == self._gpu_device.upper():
+                        self._max_mem = mem
+                        break
+            else:
+                x = sorted(local_gpu_devices, key=lambda x: x[0])
+                self._max_mem = x[0][1]
+                
         # exclude memories for variables
         learning_params_size = 0
         self._trainable_vars = tf.trainable_variables()

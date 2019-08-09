@@ -12,7 +12,9 @@
 """
 import time
 from functools import wraps
-import tensorflow as tf
+
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 from tensorflow.core.framework import attr_value_pb2
 
 
