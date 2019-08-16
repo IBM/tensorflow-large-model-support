@@ -1573,21 +1573,18 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                            'TensorFlow Large Model Support.')
             return
 
-        # Check if the model has the train_function created. If the train
-        # function is created, (Keras fit, fit_generator, TensorFlow Keras fit)
-        # paths, then the optimizer operations / backward phase operations are
-        # in the graph.
-        if getattr(self._model, 'train_function') is not None:
-            self.run(tf.get_default_graph(), True)
-        else:
-            # This is the tf.keras fit_generator path.
+        if self._is_training and getattr(self._model, 'train_function') is None:
+            # This is the tf.keras fit_generator path. As of TensorFlow 1.14.0,
+            # all other fit/fit_generator paths in tf.keras and Keras team Keras
+            # will have created the train_function before getting to this point.
+
             # The train_function has not been created, the graph is not
             # "complete" yet because it will not have the optimizer and backward
             # phases in it. We will create the train function now
             # so the model is fully populated for running LMS on it.
             self._log_info('Calling model._make_train_function()', 1)
             self._model._make_train_function()
-            self.run(tf.get_default_graph(), True)
+        self.run(tf.get_default_graph(), True)
 
     def _log_level_sizes(self):
         """Log the memory consuming sizes of the valid GPU operations in each
