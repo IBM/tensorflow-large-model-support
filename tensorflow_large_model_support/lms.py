@@ -1573,7 +1573,7 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                            'TensorFlow Large Model Support.')
             return
 
-        if self._is_training and getattr(self._model, 'train_function') is None:
+        if self._is_training and getattr(self._model, 'train_function', None) is None:
             # This is the tf.keras fit_generator path. As of TensorFlow 1.14.0,
             # all other fit/fit_generator paths in tf.keras and Keras team Keras
             # will have created the train_function before getting to this point.
