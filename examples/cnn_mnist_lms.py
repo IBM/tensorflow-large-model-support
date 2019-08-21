@@ -20,7 +20,8 @@ from __future__ import print_function
 
 import numpy as np
 import tempfile # Change not related to LMS
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -120,11 +121,14 @@ def cnn_model_fn(features, labels, mode):
 
 def main(unused_argv):
   # Load training and eval data
-  mnist = tf.contrib.learn.datasets.load_dataset("mnist")
-  train_data = mnist.train.images  # Returns np.array
-  train_labels = np.asarray(mnist.train.labels, dtype=np.int32)
-  eval_data = mnist.test.images  # Returns np.array
-  eval_labels = np.asarray(mnist.test.labels, dtype=np.int32)
+  ((train_data, train_labels),
+   (eval_data, eval_labels)) = tf.keras.datasets.mnist.load_data()
+
+  train_data = train_data/np.float32(255)
+  train_labels = train_labels.astype(np.int32)  # not required
+
+  eval_data = eval_data/np.float32(255)
+  eval_labels = eval_labels.astype(np.int32)  # not required
 
   # The graph_location changes are not related to LMS enablement
   # but rather allow multiple users to run the example without
@@ -143,7 +147,7 @@ def main(unused_argv):
       tensors=tensors_to_log, every_n_iter=50)
 
   # Train the model
-  train_input_fn = tf.compat.v1.estimator.inputs.numpy_input_fn(
+  train_input_fn = tf.estimator.inputs.numpy_input_fn(
       x={"x": train_data},
       y=train_labels,
       batch_size=100,
@@ -155,8 +159,7 @@ def main(unused_argv):
   # This model does not require TFLMS to successfully run. If we do not
   # specify specific tuning parameters to LMS, the auto tuning will determine
   # that TFLMS is not needed and disable it.
-  lms_hook = LMS(swapout_threshold=50, swapin_ahead=3, swapin_groupby=2,
-                 debug=True)
+  lms_hook = LMS(swapout_threshold=50, swapin_ahead=3, swapin_groupby=2)
 
   mnist_classifier.train(
       input_fn=train_input_fn,
@@ -164,8 +167,12 @@ def main(unused_argv):
       hooks=[logging_hook, lms_hook])
 
   # Evaluate the model and print results
-  eval_input_fn = tf.compat.v1.estimator.inputs.numpy_input_fn(
-      x={"x": eval_data}, y=eval_labels, num_epochs=1, shuffle=False)
+  eval_input_fn = tf.estimator.inputs.numpy_input_fn(
+      x={"x": eval_data},
+      y=eval_labels,
+      num_epochs=1,
+      shuffle=False)
+
   eval_results = mnist_classifier.evaluate(input_fn=eval_input_fn)
   print(eval_results)
 
