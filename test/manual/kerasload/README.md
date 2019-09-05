@@ -28,17 +28,43 @@ train > save > inference / evaluate
 train > save weights > instantiate model with code > inference / evaluate
 train > save weights > instantiate model with code > resume training
 
-In practice with the test files, we have seen that only the load_model is
-finalizing the graph. Loading the weights on a model created via code does
-not prevent TFLMS from modifying it.
+In practice we have seen that the loading of the weights will freeze the graph
+and prevent LMS modifications from taking effect. With low amounts of swapping
+it has been observed that loading the weights does not freeze all of the
+graph from modification. For this reason the test case specify the
+maximum amount of swapping.
 
-## Testing files
-The files in this directory are meant to be run to test the various
-scenarios listed above as well as other scenarios that could be imagined.
+## Description of test files
 
-The files are not guaranteed to be "complete" and testing using them will
-involve modifying the save / load sections to achieve different test combinations.
+The Keras_ResNet50 files provide a means to test the fit_generator path but
+are not being actively maintained. The more exhaustive test cases are provided
+by the mnist model.
 
-In general, the train_save .py should be run first to do some training and
-produce the saved file. The corresponding load_train or load_<somethingelse>
-file is then run to test the ability for LMS to modify the graph.
+The tests consist of two parts. First train and save followed by loading the
+saved file and doing either more training or inference.
+
+Here the save - load test combinations that should be run:
+
+| train-save                                  | load-other action               |
+|---------------------------------------------|---------------------------------|
+| mnist_cnn_keras_trainsave.py                |  mnist_cnn_keras_loadtrain.py   |
+| mnist_cnn_keras_trainsave.py                |  mnist_cnn_keras_loadpredict.py |
+| mnist_cnn_keras_trainsaveweights.py         |  mnist_cnn_keras_loadweights_train.py |
+| mnist_cnn_keras_trainsaveweights.py         |  mnist_cnn_keras_loadweights_predict.py |
+| mnist_cnn_keras_trainsaveweights_h5.py      |  mnist_cnn_keras_loadweights_h5_train.py |
+| mnist_cnn_keras_trainsaveweights_h5.py      |  mnist_cnn_keras_loadweights_h5_predict.py |
+| mnist_cnn_keras_trainsave_no_optimizer.py   |  mnist_cnn_keras_loadpredict.py |
+| mnist_cnn_keras_train_save_checkpoint.py    | mnist_cnn_keras_load_checkpoint_train.py |
+| mnist_cnn_keras_train_save_checkpoint.py    | mnist_cnn_keras_load_checkpoint_predict.py |
+
+The `run_save_load.sh` script runs the 9 combinations in order and
+run the 7 tests with both TensorFlow Keras and Keras team Keras.
+
+Checking for error conditions:
+The .py files should run without error. Moreover, the output of the load* files
+should show LMS modifying the graph. The output of the load* files should NOT
+contain warning/error messages about graph modifications not taking effect. An
+example of such a warning message is: `W tensorflow/c/c_api.cc:769] Operation '{name:'loss/dense_1_loss/softmax_cross_entropy_with_logits/Reshape' id:205 op device:{} def:{{{node loss/dense_1_loss/softmax_cross_entropy_with_logits/Reshape}} = Reshape[T=DT_FLOAT, Tshape=DT_INT32](lms/swapin_dense_1_BiasAdd_0:0, loss/dense_1_loss/softmax_cross_entropy_with_logits/concat)}}' was changed by updating input tensor after it was run by a session. This mutation will have no effect, and will trigger an error in the future. Either don't modify nodes after running them or create a new session.`
+
+Such an error message means that the LMS modifications will not take effect and some or
+no swapping will be done. This is an error condition for LMS and must be addressed.
