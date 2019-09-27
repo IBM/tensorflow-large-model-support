@@ -139,7 +139,7 @@ def get_callbacks(args):
                   sync_mode=args.sync_mode,
                   serialization=serialization,
                   serialization_by_size=args.serialization_by_size)
-        lms.batch_size = 1
+        lms.batch_size = args.batch_size
         callbacks.append(lms)
 
     return callbacks
@@ -171,7 +171,7 @@ def run_model(args):
         input_shape = (3, image_dim, image_dim)
 
     num_classes = 15
-    batch_size = 1
+    batch_size = args.batch_size
     model_class = model_choices.get(args.model)
     model = model_class(weights=None, include_top=True, input_shape=input_shape,
                         classes=num_classes)
@@ -215,6 +215,11 @@ def main(model=None):
                         default=500,
                         help='Dimension of one side of the square image '
                              'to be generated. (Default 500)')
+    
+    parser.add_argument("--batch_size", type=int,
+                        default=1,
+                        help='Batch size. (Default 1)')
+
     # LMS parameters
     lms_group = parser.add_mutually_exclusive_group(required=False)
     lms_group.add_argument('--lms', dest='lms', action='store_true',
