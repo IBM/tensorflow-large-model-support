@@ -403,6 +403,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         sl_by_size = []
         if self._serialization_by_size:
             sl_by_size = self._get_serialization_levels_by_size(self._serialization_by_size)
+            self._log_info("Serialize topological sort levels consuming more than: {} GiB".format(self._serialization_by_size),
+                           offset=2)
         self._serialization += sl_by_size
 
         # serialize the topological sort if enabled
