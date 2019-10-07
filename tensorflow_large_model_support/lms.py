@@ -604,6 +604,12 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                                "{} and {}.".format(h_op.name, d_op.name), 1)
                 fs = {op for op in ut.fanins(d_op) | set(d_op.control_inputs)
                       if is_device_op(op)}
+                if fs:
+                    pass
+                else:
+                    fs = {op
+                          for op in self._get_ops_by_level(self._get_level(d_op) - 1)
+                          if is_device_op(op)}
                 # cycles: h_op -> h_op_outs -> fs_ops -> h_op
                 fs -= {op2
                        for op1 in h_op_outs
