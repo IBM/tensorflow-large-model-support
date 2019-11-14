@@ -106,7 +106,7 @@ lms_callback = LMSKerasCallback()
 model.fit_generator(generator=training_gen, callbacks=[lms_callback])
 ```
 For a working example of LMS integration with Keras based training see:
-`examples/Keras_ResNet50.py`.
+[examples/Keras_ResNet50.py](examples/Keras_ResNet50.py).
 
 ### TensorFlow Grappler and TensorFlow Large Model Support
 
