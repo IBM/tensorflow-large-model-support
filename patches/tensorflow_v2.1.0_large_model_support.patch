@@ -1,0 +1,3024 @@
+From 4a4c15b8c9853f9a677509547528a231c3f93a07 Mon Sep 17 00:00:00 2001
+From: Samuel Matzek <smatzek@us.ibm.com>
+Date: Tue, 4 Feb 2020 11:05:20 -0600
+Subject: [PATCH] TensorFlow Large Model Support for TensorFlow 2.1.0
+
+This commit delivers TensorFlow Large Model Support
+for TensorFlow at version 2.1.0.
+
+See: https://github.com/IBM/tensorflow-large-model-support
+
+Co-authored-by: Matthew Brandyberry <mbrandy@us.ibm.com>
+Co-authored-by: Andres Lugo-Reyes <aalugore@us.ibm.com>
+---
+ tensorflow/c/eager/c_api.cc                        |  20 +
+ tensorflow/c/eager/c_api.h                         |   4 +
+ tensorflow/c/eager/tape.h                          |   1 +
+ tensorflow/c/tf_tensor.cc                          |   6 +-
+ tensorflow/compiler/jit/xla_launch_util.h          |   6 +-
+ tensorflow/core/BUILD                              |   9 +-
+ tensorflow/core/common_runtime/bfc_allocator.cc    | 415 ++++++++++++++++++++-
+ tensorflow/core/common_runtime/bfc_allocator.h     |  81 +++-
+ tensorflow/core/common_runtime/executor.cc         |  14 +-
+ .../core/common_runtime/gpu/gpu_bfc_allocator.cc   | 104 +++++-
+ .../core/common_runtime/gpu/gpu_bfc_allocator.h    |  25 ++
+ .../core/common_runtime/gpu/gpu_debug_allocator.cc |   8 +
+ .../core/common_runtime/gpu/gpu_debug_allocator.h  |   2 +
+ tensorflow/core/common_runtime/gpu/gpu_device.cc   |   3 +
+ .../core/common_runtime/gpu/gpu_event_mgr_test.cc  |   3 +-
+ .../core/common_runtime/gpu/gpu_mem_allocator.h    |   2 +
+ tensorflow/core/framework/allocator.cc             |  25 +-
+ tensorflow/core/framework/allocator.h              | 112 +++++-
+ tensorflow/core/framework/op_kernel.cc             |  21 ++
+ tensorflow/core/framework/op_kernel.h              |  10 +
+ tensorflow/core/framework/tensor.cc                | 326 +++++++++++++++-
+ tensorflow/core/framework/tensor.h                 |  48 ++-
+ tensorflow/core/protobuf/config.proto              |   6 +
+ tensorflow/lite/delegates/flex/buffer_map.cc       |   5 +-
+ tensorflow/python/BUILD                            |  16 +
+ tensorflow/python/__init__.py                      |   1 +
+ tensorflow/python/eager/context.py                 |  48 ++-
+ tensorflow/python/eager/pywrap_tensor.cc           |  21 ++
+ tensorflow/python/eager/pywrap_tfe_src.cc          |   5 +
+ tensorflow/python/framework/bfc_allocator_stats.i  | 401 ++++++++++++++++++++
+ tensorflow/python/framework/bfc_allocator_stats.py |  85 +++++
+ tensorflow/python/framework/config.py              |  29 ++
+ tensorflow/python/keras/engine/network.py          |   7 +-
+ tensorflow/python/tensorflow.i                     |   2 +
+ .../golden/v1/tensorflow.config.experimental.pbtxt |  16 +
+ .../api/golden/v1/tensorflow.experimental.pbtxt    |  64 ++++
+ .../golden/v2/tensorflow.config.experimental.pbtxt |  16 +
+ .../api/golden/v2/tensorflow.experimental.pbtxt    |  64 ++++
+ 38 files changed, 1976 insertions(+), 55 deletions(-)
+ create mode 100644 tensorflow/python/framework/bfc_allocator_stats.i
+ create mode 100644 tensorflow/python/framework/bfc_allocator_stats.py
+
+diff --git a/tensorflow/c/eager/c_api.cc b/tensorflow/c/eager/c_api.cc
+index bffceab1bc..2d07769bf9 100644
+--- a/tensorflow/c/eager/c_api.cc
++++ b/tensorflow/c/eager/c_api.cc
+@@ -1,4 +1,5 @@
+ /* Copyright 2017 The TensorFlow Authors. All Rights Reserved.
++ * Copyright 2019, 2020. IBM All Rights Reserved.
+ 
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+@@ -1253,6 +1254,25 @@ TFE_TensorHandle* TFE_TensorHandleCopyToDevice(TFE_TensorHandle* h,
+   return nullptr;
+ }
+ 
++void TFE_TensorHandle_SetGraphId(TFE_TensorHandle* h, int64_t id) {
++  if (h->handle == nullptr) return;
++  const tensorflow::Tensor* t = nullptr;
++  tensorflow::Status s = h->handle->Tensor(&t);
++  if (!s.ok()) return;
++  t->SetGraphId(id);
++}
++
++bool TFE_TensorHandle_GraphId(TFE_TensorHandle* h, int64_t* id) {
++  if (h->handle == nullptr) return false;
++  const tensorflow::Tensor* t = nullptr;
++  tensorflow::Status s = h->handle->Tensor(&t);
++  if (!s.ok()) return false;
++  tensorflow::int64 graph_id;
++  if (!t->GraphId(&graph_id)) return false;
++  *id = graph_id;
++  return true;
++}
++
+ void TFE_ContextAddFunctionDef(TFE_Context* ctx,
+                                const char* serialized_function_def, size_t size,
+                                TF_Status* status) {
+diff --git a/tensorflow/c/eager/c_api.h b/tensorflow/c/eager/c_api.h
+index d29e66dc1b..3484ef011c 100644
+--- a/tensorflow/c/eager/c_api.h
++++ b/tensorflow/c/eager/c_api.h
+@@ -1,4 +1,5 @@
+ /* Copyright 2017 The TensorFlow Authors. All Rights Reserved.
++ * Copyright 2019, 2020. IBM All Rights Reserved.
+ 
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+@@ -193,6 +194,9 @@ TF_CAPI_EXPORT extern TFE_TensorHandle* TFE_TensorHandleCopyToDevice(
+     TFE_TensorHandle* h, TFE_Context* ctx, const char* device_name,
+     TF_Status* status);
+ 
++TF_CAPI_EXPORT extern void TFE_TensorHandle_SetGraphId(TFE_TensorHandle* h, int64_t id);
++TF_CAPI_EXPORT extern bool TFE_TensorHandle_GraphId(TFE_TensorHandle* h, int64_t* id);
++
+ // Debugging/Profiling information for TFE_TensorHandle
+ //
+ // TFE_TensorDebugInfo contains information useful for debugging and
+diff --git a/tensorflow/c/eager/tape.h b/tensorflow/c/eager/tape.h
+index 67edde38f9..c7a36f7cd6 100644
+--- a/tensorflow/c/eager/tape.h
++++ b/tensorflow/c/eager/tape.h
+@@ -624,6 +624,7 @@ Status InitialGradients(
+ // corresponding to index 0 is used, and the gradient values at indices 1-4 are
+ // ignored (and hence can be None). The backprop algorithm can then leverage
+ // this by not constructing zeros to pass for those indices.
++// TODO(mtbrandy): add FusedBatchNormV2 and V3 here?
+ std::unordered_map<string, std::unordered_set<int>>*
+ FunctionsAcceptingNoneForIndicesMap() {
+   static auto* const m =
+diff --git a/tensorflow/c/tf_tensor.cc b/tensorflow/c/tf_tensor.cc
+index 2ad778d605..e2da514518 100644
+--- a/tensorflow/c/tf_tensor.cc
++++ b/tensorflow/c/tf_tensor.cc
+@@ -28,6 +28,7 @@ limitations under the License.
+ using tensorflow::Status;
+ using tensorflow::Tensor;
+ using tensorflow::TensorBuffer;
++using tensorflow::SimpleTensorBufferBase;
+ using tensorflow::errors::FailedPrecondition;
+ using tensorflow::errors::InvalidArgument;
+ 
+@@ -63,12 +64,12 @@ void deallocate_buffer(void* data, size_t len, void* arg) {
+ }  // namespace tensorflow
+ 
+ namespace {
+-class TF_ManagedBuffer : public TensorBuffer {
++class TF_ManagedBuffer : public SimpleTensorBufferBase {
+  public:
+   TF_ManagedBuffer(void* data, size_t len,
+                    void (*deallocator)(void* data, size_t len, void* arg),
+                    void* deallocator_arg)
+-      : TensorBuffer(data),
++      : SimpleTensorBufferBase(data),
+         len_(len),
+         deallocator_(deallocator),
+         deallocator_arg_(deallocator_arg) {}
+@@ -82,7 +83,6 @@ class TF_ManagedBuffer : public TensorBuffer {
+   }
+ 
+   size_t size() const override { return len_; }
+-  TensorBuffer* root_buffer() override { return this; }
+   void FillAllocationDescription(
+       tensorflow::AllocationDescription* proto) const override {
+     tensorflow::int64 rb = size();
+diff --git a/tensorflow/compiler/jit/xla_launch_util.h b/tensorflow/compiler/jit/xla_launch_util.h
+index 81d63d299e..cfe6528d25 100644
+--- a/tensorflow/compiler/jit/xla_launch_util.h
++++ b/tensorflow/compiler/jit/xla_launch_util.h
+@@ -171,11 +171,11 @@ class XlaComputationLaunchContext {
+ 
+ // A simple TensorBuffer implementation that allows us to create Tensors that
+ // take ownership of pre-allocated memory.
+-class XlaTensorBuffer : public TensorBuffer {
++class XlaTensorBuffer : public SimpleTensorBufferBase {
+  public:
+   XlaTensorBuffer(const void* ptr, size_t expected_size, size_t actual_size,
+                   Allocator* allocator)
+-      : TensorBuffer(const_cast<void*>(ptr)),
++      : SimpleTensorBufferBase(const_cast<void*>(ptr)),
+         expected_size_(expected_size),
+         actual_size_(actual_size),
+         allocator_(allocator) {}
+@@ -188,8 +188,6 @@ class XlaTensorBuffer : public TensorBuffer {
+ 
+   size_t size() const override { return expected_size_; }
+ 
+-  TensorBuffer* root_buffer() override { return this; }
+-
+   void FillAllocationDescription(AllocationDescription* proto) const override {
+     proto->set_allocated_bytes(actual_size_);
+   }
+diff --git a/tensorflow/core/BUILD b/tensorflow/core/BUILD
+index 8369046aa8..9fe5a38e9c 100644
+--- a/tensorflow/core/BUILD
++++ b/tensorflow/core/BUILD
+@@ -3132,6 +3132,8 @@ cc_library(
+     visibility = ["//visibility:public"],
+     deps = [
+         ":allocator",
++        ":framework",
++        ":framework_internal",
+         ":lib",
+         ":lib_internal",
+         ":protos_all_cc",
+@@ -3324,11 +3326,16 @@ tf_cuda_library(
+     srcs = [
+         "common_runtime/gpu/gpu_bfc_allocator.cc",
+     ],
+-    hdrs = ["common_runtime/gpu/gpu_bfc_allocator.h"],
++    hdrs = [
++        "common_runtime/gpu/gpu_bfc_allocator.h",
++        "common_runtime/gpu/gpu_process_state.h",
++        "common_runtime/process_state.h",
++    ],
+     features = ["parse_headers"],
+     visibility = ["//visibility:public"],
+     deps = [
+         ":bfc_allocator",
++        ":gpu_lib",
+         ":gpu_mem_allocator",
+         ":lib",
+         ":lib_internal",
+diff --git a/tensorflow/core/common_runtime/bfc_allocator.cc b/tensorflow/core/common_runtime/bfc_allocator.cc
+index 3c0b2643c1..f8ffcfb70c 100644
+--- a/tensorflow/core/common_runtime/bfc_allocator.cc
++++ b/tensorflow/core/common_runtime/bfc_allocator.cc
+@@ -1,4 +1,5 @@
+ /* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
++Copyright 2019, 2020. IBM All Rights Reserved.
+ 
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+@@ -18,6 +19,7 @@ limitations under the License.
+ #include <atomic>
+ 
+ #include "tensorflow/core/common_runtime/allocator_retry.h"
++#include "tensorflow/core/framework/tensor.h"
+ #include "tensorflow/core/lib/core/bits.h"
+ #include "tensorflow/core/lib/strings/numbers.h"
+ #include "tensorflow/core/lib/strings/str_util.h"
+@@ -357,6 +359,373 @@ void BFCAllocator::DeallocateRegions(
+   }
+ }
+ 
++bool BFCAllocator::LMSReclaimHistory::predict() {
++  if (__builtin_popcountl(data_) > 1) {
++    int trailing_zeros = __builtin_ctzl(data_);
++    // 1. Detect simple pattern of one swap repeating at a regular frequency.
++    if (trailing_zeros == __builtin_ctzl(data_ >> (trailing_zeros + 1)))
++      return true;
++    // 2. Detect any repeating pattern over N encounters.
++    for (int N = trailing_zeros + 2; N <= 8; N++) {
++      // The pattern must start with a swap to predict a swap on this encounter.
++      uint64 start = 1UL << (N - 1);
++      uint64 mask = (start << 1) - 1;
++      if ((data_ & start) &&
++          (((data_ ^ (data_ >> N)) & mask) == 0))
++        return true;
++    }
++  }
++  return false;
++}
++
++void BFCAllocator::OccupyChunk(IntrusiveListHook<LMSTensorBuffer>* hook) {
++  if (!lms_defrag_enabled_)
++    return;
++  LMSTensorBuffer* tensor_buf = hook->elem();
++  void* ptr = tensor_buf->GetDevicePtr();
++  mutex_lock l(lock_);
++  BFCAllocator::ChunkHandle h = this->region_manager_.get_handle(ptr);
++  DCHECK(h != kInvalidChunkHandle);
++  Chunk* chunk = ChunkFromHandle(h);
++  chunk->lms_buf_hook = hook;
++}
++
++void BFCAllocator::VacateChunk(IntrusiveListHook<LMSTensorBuffer>* hook) {
++  if (!lms_defrag_enabled_)
++    return;
++  LMSTensorBuffer* tensor_buf = hook->elem();
++  void* ptr = tensor_buf->GetDevicePtr();
++  mutex_lock l(lock_);
++  BFCAllocator::ChunkHandle h = this->region_manager_.get_handle(ptr);
++  DCHECK(h != kInvalidChunkHandle);
++  Chunk* chunk = ChunkFromHandle(h);
++  chunk->lms_buf_hook = nullptr;
++}
++
++bool BFCAllocator::ReclaimListAdd(void* ptr, IntrusiveListHook<LMSTensorBuffer>* hook) {
++  LMSTensorBuffer* buf = hook->elem();
++  size_t size = buf->size();
++
++  mutex_lock l(lock_);
++  stats_.bytes_inactive += size;
++  reclaim_list_.append(hook);
++
++  VLOG(2) << "-> INACTIVE " << (void*)buf << " (" << size << ")";
++
++  int64 id;
++  bool pageout_predicted = buf->GraphId(&id) && reclaim_history_[id].predict();
++
++  if (reclaim_waiter_)
++    reclaim_cv_.notify_all();
++
++  return pageout_predicted;
++}
++
++bool BFCAllocator::ReclaimListRemove(void* ptr, IntrusiveListHook<LMSTensorBuffer>* hook) {
++  mutex_lock l(lock_);
++  return ReclaimListRemoveInternal(ptr, hook, false);
++}
++
++void BFCAllocator::ReclaimListNotify() {
++  mutex_lock l(lock_);
++  if (reclaim_waiter_)
++    reclaim_cv_.notify_all();
++}
++
++bool BFCAllocator::ReclaimListRemoveInternal(void* ptr, IntrusiveListHook<LMSTensorBuffer>* hook, bool reclaimed) {
++  bool removed = hook->remove();
++  CHECK(!reclaimed || removed); // reclaimed tensors must be on the list
++  if (removed) {
++    LMSTensorBuffer* buf = hook->elem();
++    size_t size = buf->size();
++    stats_.bytes_inactive -= size;
++    stats_.peak_bytes_active = std::max(stats_.peak_bytes_active, stats_.bytes_active());
++    if (!reclaimed) {
++      // Activate chunk
++      VLOG(2) << "ACTIVE   <- " << (void*)buf << " (" << size << ")"
++              <<" [active: " << stats_.bytes_active() << ", inactive: " << stats_.bytes_inactive << "]";
++    } else {
++      // Free chunk
++      stats_.bytes_reclaimed += size;
++      DeallocateRawInternal(ptr);
++    }
++
++    int64 id;
++    if (buf->GraphId(&id)) {
++      LMSReclaimHistory& hist = reclaim_history_[id];
++      if (VLOG_IS_ON(2) &&
++          (!reclaimed || __builtin_popcountl(hist.data()) > 1) &&
++          hist.predict() != reclaimed) {
++        LOG(INFO) << "PREDICT: " << (reclaimed ? "MISS  " : "WRONG ")
++                  << (void*)buf << " (" << size << ")"
++                  << " id=" << (void*)id
++                  << " h=" << (void*)hist.data();
++      }
++      hist.record(reclaimed);
++    }
++
++    if (reclaim_waiter_)
++      reclaim_cv_.notify_all();
++  }
++
++  return removed;
++}
++
++BFCAllocator::ReclaimStatus BFCAllocator::TryReclaim(IntrusiveListHook<LMSTensorBuffer>* hook) {
++  LMSTensorBuffer* buf = hook->elem();
++  void* ptr = buf->TryPageout();
++  if (ptr == nullptr) {
++    // Pageout attempt was not successful. Wait on reclaim list notification and retry.
++    return ReclaimStatus::kRetry;
++  }
++  ReclaimListRemoveInternal(ptr, hook, true);
++  return ReclaimStatus::kSuccess;
++}
++
++BFCAllocator::ReclaimStatus BFCAllocator::ReclaimOne(size_t rounded_bytes) {
++  IntrusiveListHook<LMSTensorBuffer>* best = nullptr;
++  size_t best_size = ULONG_MAX;
++  auto hook = reclaim_list_.head();
++  auto end = reclaim_list_.terminator();
++  do {
++    LMSTensorBuffer* buf = hook->elem();
++    size_t size = RoundedBytes(buf->size());
++    if ( (size >= rounded_bytes) && (size < best_size) ) {
++      best = hook;
++      best_size = size;
++      if (size == rounded_bytes)
++        break;
++    }
++    hook = hook->next();
++  } while (hook != end);
++
++  if (best == nullptr)
++    return ReclaimStatus::kUnavailable;
++
++  return TryReclaim(best);
++}
++
++BFCAllocator::ReclaimStatus BFCAllocator::ReclaimFragments(size_t rounded_bytes) {
++  // TODO(mtbrandy): Attempt to reclaim smaller tensors that, when
++  // coalesced, will satisfy the request.
++  // Dumb and slow (but effective) placeholder implementation.
++  return ReclaimAll();
++}
++
++BFCAllocator::ReclaimStatus BFCAllocator::ReclaimAll() {
++  stats_.num_full_reclaims++;
++  ReclaimStatus status = ReclaimStatus::kUnavailable;
++  while (!reclaim_list_.empty() &&
++         (status = TryReclaim(reclaim_list_.head())) == ReclaimStatus::kSuccess);
++  return status;
++}
++
++void* BFCAllocator::ReclaimChunkPtr(BinNum bin_num, size_t rounded_bytes,
++                                    size_t num_bytes, uint64 freed_before,
++                                    mutex_lock& lock) {
++  while (!reclaim_list_.empty()) {
++    void* ptr;
++
++    // Reclaim a single suitable inactive allocation
++    auto status = ReclaimOne(rounded_bytes);
++    if (status == ReclaimStatus::kSuccess) {
++      stats_.num_single_reclaims++;
++      ptr = FindChunkPtr(bin_num, rounded_bytes, num_bytes, freed_before);
++      if (ptr != nullptr) {
++        return ptr;
++      }
++      VLOG(2) << "ReclaimOne: ineffective (" << rounded_bytes << ")";
++      continue;
++    }
++    // ReclaimFragments is currently a dummy impl which calls ReclaimAll.
++    // Commenting out the ReclaimFragments call until it gets a unique
++    // implementation to avoid a double call to ReclaimAll.
++
++    // if (status == ReclaimStatus::kUnavailable) {
++    //   // Reclaim and coalesce fragments of suitable inactive allocations
++    //   status = ReclaimFragments(rounded_bytes);
++    //   if (status == ReclaimStatus::kSuccess) {
++    //     ptr = FindChunkPtr(bin_num, rounded_bytes, num_bytes, freed_before);
++    //     if (ptr != nullptr) {
++    //       return ptr;
++    //     }
++    //     VLOG(2) << "ReclaimFragments: ineffective (" << rounded_bytes << ")";
++    //     continue;
++    //   }
++    // }
++
++    if (status == ReclaimStatus::kUnavailable) {
++      // Reclaim everything to give DeallocateFreeRegions the best chance of success.
++      status = ReclaimAll();
++      if (status == ReclaimStatus::kSuccess) {
++        ptr = FindChunkPtr(bin_num, rounded_bytes, num_bytes, freed_before);
++        if (ptr != nullptr) {
++          return ptr;
++        }
++        continue;
++      }
++    }
++
++    if (status == ReclaimStatus::kUnavailable) {
++      continue;
++    }
++
++    CHECK(status == ReclaimStatus::kRetry);
++    VLOG(2) << "ReclaimChunkPtr: wait (" << rounded_bytes << ")";
++    reclaim_waiter_++;
++    reclaim_cv_.wait(lock);
++    reclaim_waiter_--;
++    VLOG(2) << "ReclaimChunkPtr: notified (" << rounded_bytes << ")";
++
++    // Retry FindChunkPtr since the allocation map may have changed.
++    ptr = FindChunkPtr(bin_num, rounded_bytes, num_bytes, freed_before);
++    if (ptr != nullptr) {
++      return ptr;
++    }
++  } // end while reclaim list not empty
++  // At this point we have reclaimed all possible tensors and waited for all
++  // pageouts to complete and there is still not enough free space to
++  // satisfy the request.
++  if (lms_defrag_enabled_ && DefragmentFreeChunks(rounded_bytes, freed_before)) {
++    void* ptr = FindChunkPtr(bin_num, rounded_bytes, num_bytes, freed_before);
++    if (ptr != nullptr) {
++      return ptr;
++    }
++  }
++  return nullptr;
++}
++
++bool BFCAllocator::DefragmentFreeChunks(size_t rounded_bytes, uint64 freed_before) {
++  VLOG(2) << "DefragmentFreeChunks >";
++  if ((memory_limit_ - stats_.bytes_in_use) < rounded_bytes) {
++    VLOG(2) << "Insufficient free space to allocate "
++            <<rounded_bytes<< "bytes.";
++    return false;
++  }
++
++  // Look at a set of up to range_size contiguous chunks for fragmented
++  // free chunks that could be defragmented to satisfy the request
++  // for rounded_bytes. The range size is increased and chunks are searched
++  // again if no defragmentation region is found.
++  int range_size = 10;
++  // List of buffers to move as part of the defragmentation
++  std::vector<IntrusiveListHook<LMSTensorBuffer>*> defrag_buffers;
++  // Free bytes that will coalesced by moving the buffers in defrag_buffers
++  size_t free_size = 0;
++  size_t move_size = 0; //size of the chunks in the defrag_buffers list
++  size_t num_chunks = chunks_.size();
++  // Find the starting bin number. We start at a smaller bin than the bin
++  // that could satisfy the rounded bytes since smaller fragmented free chunks
++  // in that bin could coalesce during defragmentation and move to higher bins.
++  BinNum initial_bin = BinNumForSize(rounded_bytes/8);
++  while((free_size < rounded_bytes) && (range_size <= num_chunks)) {
++    VLOG(4) << "Looking at regions of "<< range_size <<" chunks.";
++    for (BinNum bin_num=initial_bin;
++          (bin_num < kNumBins) && (free_size < rounded_bytes); bin_num++) {
++      Bin* b = BinFromIndex(bin_num);
++      VLOG(4) << "Checking bin for: "
++              << strings::HumanReadableNumBytes(b->bin_size);
++      for (auto citer = b->free_chunks.begin();
++           (citer != b->free_chunks.end()) && (free_size < rounded_bytes);
++           ++citer) {
++        const BFCAllocator::ChunkHandle h = (*citer);
++        CHECK(h != kInvalidChunkHandle);
++        BFCAllocator::Chunk* chunk = ChunkFromHandle(h);
++        CHECK(chunk != nullptr);
++        DCHECK(!chunk->in_use());
++        free_size = chunk->size;
++        defrag_buffers.clear();
++        move_size = 0;
++        CHECK(chunk->ptr != nullptr);
++
++        VLOG(4) << "Searching forward from chunk at "<< chunk->ptr;
++        // look at up to range_size contiguous chunks from this starting
++        // free chunk.
++        for (int i=0; ((i < range_size) && (chunk->next != kInvalidChunkHandle)
++              && (free_size < rounded_bytes));
++              i++) {
++          CHECK(chunk != nullptr);
++          CHECK(chunk->next != kInvalidChunkHandle);
++          chunk = ChunkFromHandle(chunk->next);
++          CHECK(chunk != nullptr);
++          if (!chunk->in_use()) {
++            free_size += chunk->size;
++          }
++          else if (chunk->lms_buf_hook != nullptr) {
++            DCHECK((chunk->lms_buf_hook)->detached());
++            defrag_buffers.push_back(chunk->lms_buf_hook);
++            move_size += chunk->size;
++          }
++          else {
++            // A rare case of in use chunk that is not occupied by a TensorBuffer.
++            // We can't safely move this chunk so we break and restart the search
++            // from the next free chunk in this bin.
++            break;
++          }
++        }//end search forward from chunk
++        VLOG(4) << "Done searching forward from chunk at "<< chunk->ptr;
++      }//end search free chunks in bin
++      VLOG(4) << "Done free in bin";
++    }//end search all bins
++    VLOG(4) << "Done all bins";
++    range_size = (range_size < num_chunks) ? std::min<std::size_t>(range_size * 2, num_chunks) : range_size + 1;
++  }//end while increasing range size
++
++  if (free_size >= rounded_bytes) {
++    stats_.num_defragmentations++;
++
++    if (VLOG_IS_ON(2)) {
++      string buf = strings::StrCat("\nA contiguous block of ", free_size,
++        " bytes ", "could be created by moving ", defrag_buffers.size(),
++        " tensors of cumulative size ", move_size,
++        " bytes at locations: ");
++      for (auto citer = defrag_buffers.begin(); citer != defrag_buffers.end();
++           ++citer) {
++        LMSTensorBuffer* tbuf = (*citer)->elem();
++        void* ptr = tbuf->GetDevicePtr();
++        strings::StrAppend(&buf, strings::Hex(reinterpret_cast<uint64>(ptr)),
++                           ", ");
++
++      }
++      VLOG(2) << buf << "\n";
++    }
++
++    // First page out all buffers in the contiguous memory block and
++    // deallocate the memory which will allow the contiguous block to
++    // coalesce.
++    std::vector<IntrusiveListHook<LMSTensorBuffer>*> pagedout_buffers;
++    for (auto citer = defrag_buffers.begin(); citer != defrag_buffers.end();
++         ++citer) {
++      LMSTensorBuffer* tbuf = (*citer)->elem();
++      void* device_ptr = tbuf->TryPageout();
++      if (device_ptr == nullptr) {
++        LOG(ERROR) << "Pageout of " << device_ptr << " failed.";
++        break;
++      }
++      stats_.bytes_defragged += tbuf->size();
++      pagedout_buffers.push_back((*citer));
++      DeallocateRawInternal(device_ptr);
++    }
++
++    // Next, page in the buffers that were paged out above.
++    bool return_val = (defrag_buffers.size() == pagedout_buffers.size());
++    for (auto citer = pagedout_buffers.begin(); citer != pagedout_buffers.end();
++         ++citer) {
++        LMSTensorBuffer* tbuf = (*citer)->elem();
++        size_t pagein_size = tbuf->size();
++        size_t pagein_rounded = RoundedBytes(pagein_size);
++        BinNum bin_num = BinNumForSize(pagein_rounded);
++        void* ptr = FindChunkPtr(bin_num, pagein_rounded, pagein_size, freed_before);
++        DCHECK(ptr != nullptr);
++        tbuf->Pagein(ptr);
++    }
++    VLOG(2) << "DefragmentFreeChunks <";
++    return return_val;
++  }
++  VLOG(2) << "DefragmentFreeChunks <";
++  return false;
++}
++
+ void* BFCAllocator::AllocateRawInternal(size_t unused_alignment,
+                                         size_t num_bytes,
+                                         bool dump_log_on_failure,
+@@ -404,6 +773,14 @@ void* BFCAllocator::AllocateRawInternal(size_t unused_alignment,
+     }
+   }
+ 
++  // Try to swap out eligible tensor(s)
++  if (lms_enabled_) {
++    ptr = ReclaimChunkPtr(bin_num, rounded_bytes, num_bytes, freed_before, l);
++    if (ptr != nullptr) {
++      return ptr;
++    }
++  }
++
+   // Reaching this point means that no chunks can satisfy the request. Also,
+   // the unallocated bytes cannot satisfy the request. Before giving up, let's
+   // try deallocating free regions so that suballocator can combine them with
+@@ -427,6 +804,20 @@ void* BFCAllocator::AllocateRawInternal(size_t unused_alignment,
+                  << ").  Current allocation summary follows.";
+     DumpMemoryLog(rounded_bytes);
+     LOG(WARNING) << RenderOccupancy();
++
++    if (!lms_enabled_) {
++      LOG(WARNING) << "Enabling Large Model Support may avoid this failure.";
++    }
++    else if (lms_enabled_ && !lms_defrag_enabled_ &&
++       ((memory_limit_ - stats_.bytes_in_use) >= rounded_bytes)) {
++       // There should be enough memory to satisfy the request, but
++       // we were not able to find a contiguous section due to memory
++       // fragmentation.
++       LOG(WARNING) << "Enough free memory to satisfy the allocation request "
++                    << "exists but it is fragmented. Enabling Large Model "
++                    << "Support defragmentation may avoid this failure.";
++    }
++
+   }
+   return nullptr;
+ }
+@@ -474,6 +865,7 @@ void* BFCAllocator::FindChunkPtr(BinNum bin_num, size_t rounded_bytes,
+         stats_.bytes_in_use += chunk->size;
+         stats_.peak_bytes_in_use =
+             std::max(stats_.peak_bytes_in_use, stats_.bytes_in_use);
++        stats_.peak_bytes_active = std::max(stats_.peak_bytes_active, stats_.bytes_active());
+         stats_.largest_alloc_size =
+             std::max<std::size_t>(stats_.largest_alloc_size, chunk->size);
+ 
+@@ -548,16 +940,17 @@ void BFCAllocator::SplitChunk(BFCAllocator::ChunkHandle h, size_t num_bytes) {
+ void BFCAllocator::DeallocateRaw(void* ptr) {
+   VLOG(1) << "DeallocateRaw " << Name() << " "
+           << (ptr ? RequestedSize(ptr) : 0);
+-  DeallocateRawInternal(ptr);
+-  retry_helper_.NotifyDealloc();
+-}
+-
+-void BFCAllocator::DeallocateRawInternal(void* ptr) {
+   if (ptr == nullptr) {
+     VLOG(2) << "tried to deallocate nullptr";
+     return;
++  } else {
++    mutex_lock l(lock_);
++    DeallocateRawInternal(ptr);
+   }
+-  mutex_lock l(lock_);
++  retry_helper_.NotifyDealloc();
++}
++
++void BFCAllocator::DeallocateRawInternal(void* ptr) {
+ 
+   // Find the chunk from the ptr.
+   BFCAllocator::ChunkHandle h = region_manager_.get_handle(ptr);
+@@ -653,6 +1046,7 @@ void BFCAllocator::MarkFree(BFCAllocator::ChunkHandle h) {
+ 
+   // Mark the chunk as no longer in use.
+   c->allocation_id = -1;
++  c->lms_buf_hook = nullptr;
+ 
+   // Optionally record the free time.
+   if (timing_counter_) {
+@@ -935,7 +1329,7 @@ void BFCAllocator::DumpMemoryLog(size_t num_bytes) {
+         in_use_by_size[c->size]++;
+       }
+       string buf = strings::StrCat(
+-          (c->in_use() ? "InUse" : "Free "), " at ",
++          c->usage_string(), " at ",
+           strings::Hex(reinterpret_cast<uint64>(c->ptr)), " of size ", c->size);
+ #ifdef TENSORFLOW_MEM_DEBUG
+       if (ShouldRecordOpName()) {
+@@ -1083,6 +1477,13 @@ void BFCAllocator::ClearStats() {
+   stats_.num_allocs = 0;
+   stats_.peak_bytes_in_use = stats_.bytes_in_use;
+   stats_.largest_alloc_size = 0;
++  stats_.peak_bytes_active = stats_.bytes_active();
++  stats_.bytes_reclaimed = 0;
++  stats_.num_single_reclaims = 0;
++  stats_.num_full_reclaims = 0;
++  stats_.num_defragmentations = 0;
++  stats_.bytes_defragged = 0;
++
+ }
+ 
+ std::array<BFCAllocator::BinDebugInfo, BFCAllocator::kNumBins>
+diff --git a/tensorflow/core/common_runtime/bfc_allocator.h b/tensorflow/core/common_runtime/bfc_allocator.h
+index 7c2749d6a6..b49997790c 100644
+--- a/tensorflow/core/common_runtime/bfc_allocator.h
++++ b/tensorflow/core/common_runtime/bfc_allocator.h
+@@ -1,4 +1,5 @@
+ /* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
++Copyright 2019, 2020. IBM All Rights Reserved.
+ 
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+@@ -46,7 +47,7 @@ class MemoryDump;
+ // coalescing.  One assumption we make is that the process using this
+ // allocator owns pretty much all of the memory, and that nearly
+ // all requests to allocate memory go through this interface.
+-class BFCAllocator : public Allocator {
++class BFCAllocator : public LMSAllocator {
+  public:
+   // Takes ownership of sub_allocator.
+   BFCAllocator(SubAllocator* sub_allocator, size_t total_memory,
+@@ -85,6 +86,19 @@ class BFCAllocator : public Allocator {
+ 
+   MemoryDump RecordMemoryMap();
+ 
++  void SetLMSConfig(bool enabled, bool defrag_enabled) {
++    lms_enabled_ = enabled;
++    lms_defrag_enabled_ = defrag_enabled;
++  }
++  LMSAllocator* AsLMSAllocator() final {
++    return (lms_enabled_) ? this : nullptr;
++  }
++  bool ReclaimListAdd(void* ptr, IntrusiveListHook<LMSTensorBuffer>* hook) override;
++  bool ReclaimListRemove(void* ptr, IntrusiveListHook<LMSTensorBuffer>* hook) override;
++  void ReclaimListNotify() override;
++  void OccupyChunk(IntrusiveListHook<LMSTensorBuffer>* hook) override;
++  void VacateChunk(IntrusiveListHook<LMSTensorBuffer>* hook) override;
++
+  private:
+   struct Bin;
+ 
+@@ -168,10 +182,38 @@ class BFCAllocator : public Allocator {
+     // What bin are we in?
+     BinNum bin_num = kInvalidBinNum;
+ 
++    // Large Model Support
++    // The IntrusiveListHook for the LMSTensorBuffer occupying this chunk.
++    IntrusiveListHook<LMSTensorBuffer>* lms_buf_hook = nullptr;
++
+     // Optional count when this chunk was most recently made free.
+     uint64 freed_at_count = 0;
+ 
+     bool in_use() const { return allocation_id != -1; }
++    string usage_string() const {
++      // There are 4 usage strings:
++      //  Free: The chunk is free
++      //  InUse: The chunk is in use without referencing an occupying tensor.
++      //  InUseA: The chunk is in use and occupied by an active tensor.
++      //  InUseI: The chunk is in use and occupied by an inactive tensor.
++      // String are space padded to have equal length
++      if (allocation_id != -1) {
++        if (lms_buf_hook != nullptr) {
++          if (lms_buf_hook->detached()) {
++            return "InUseA";
++          }
++          else {
++            return "InUseI";
++          }
++        }
++        else {
++          return "InUse ";
++        }
++      }
++      else {
++        return "Free  ";
++      }
++    }
+ 
+ #ifdef TENSORFLOW_MEM_DEBUG
+     // optional debugging info
+@@ -540,6 +582,43 @@ class BFCAllocator : public Allocator {
+   int64 size_history_[MEM_DEBUG_SIZE_HISTORY_SIZE];
+ #endif
+ 
++  // Large Model Support
++  class LMSReclaimHistory {
++   public:
++    void record(bool reclaimed) {
++      data_ <<= 1;
++      if (reclaimed)
++        data_ |= 1UL;
++    }
++    bool predict();
++    int64 data() const { return data_; }
++
++   private:
++    uint64 data_ = 0;
++  };
++
++  bool lms_enabled_ = false;
++  bool lms_defrag_enabled_ = false;
++  bool DefragmentFreeChunks(size_t rounded_bytes, uint64 freed_before);
++  IntrusiveList<LMSTensorBuffer> reclaim_list_ GUARDED_BY(lock_);
++  std::unordered_map<int64, LMSReclaimHistory> reclaim_history_ GUARDED_BY(lock_);
++  condition_variable reclaim_cv_;
++  int reclaim_waiter_ = 0;
++  bool ReclaimListRemoveInternal(void* ptr, IntrusiveListHook<LMSTensorBuffer>* hook, bool reclaimed)
++      EXCLUSIVE_LOCKS_REQUIRED(lock_);
++
++  enum class ReclaimStatus {
++    kSuccess,
++    kUnavailable,
++    kRetry,
++  };
++  ReclaimStatus TryReclaim(IntrusiveListHook<LMSTensorBuffer>* hook) EXCLUSIVE_LOCKS_REQUIRED(lock_);
++  ReclaimStatus ReclaimOne(size_t rounded_bytes) EXCLUSIVE_LOCKS_REQUIRED(lock_);
++  ReclaimStatus ReclaimFragments(size_t rounded_bytes) EXCLUSIVE_LOCKS_REQUIRED(lock_);
++  ReclaimStatus ReclaimAll() EXCLUSIVE_LOCKS_REQUIRED(lock_);
++  void* ReclaimChunkPtr(BinNum bin_num, size_t rounded_bytes, size_t num_bytes, uint64 freed_before,
++                        mutex_lock& lock) EXCLUSIVE_LOCKS_REQUIRED(lock_);
++
+   friend class GPUBFCAllocatorPrivateMethodsTest;
+   TF_DISALLOW_COPY_AND_ASSIGN(BFCAllocator);
+ };
+diff --git a/tensorflow/core/common_runtime/executor.cc b/tensorflow/core/common_runtime/executor.cc
+index 9cfa31c261..1ae17c02cf 100644
+--- a/tensorflow/core/common_runtime/executor.cc
++++ b/tensorflow/core/common_runtime/executor.cc
+@@ -1,4 +1,5 @@
+ /* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
++Copyright 2019, 2020. IBM All Rights Reserved.
+ 
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+@@ -218,6 +219,11 @@ struct NodeItem {
+   // 0... for forward from that input.
+   const int* forward_from() const { return forward_from_base(); }
+ 
++  // Return a unique Id in the graph for the given output.
++  int64 output_graphId(int i) const {
++    return reinterpret_cast<std::intptr_t>(&output_attr_base()[i]);
++  }
++
+   string DebugString() const {
+     string ret = strings::StrCat("{name:'", kernel->name(), "' id:", node_id);
+     if (is_source) {
+@@ -2083,8 +2089,12 @@ Status ExecutorState::ProcessOutputs(const NodeItem& item, OpKernelContext* ctx,
+       // we are in the tensor buffer.
+       DataType dtype = val.dtype_safe();
+       if (dtype == item.output_type(i)) {
+-        if (stats && val.tensor->IsInitialized()) {
+-          nodestats::SetOutput(stats, i, val.tensor);
++        Tensor* t = val.tensor;
++        if (t->IsInitialized()) {
++          if (stats) {
++            nodestats::SetOutput(stats, i, t);
++          }
++          t->SetGraphId(item.output_graphId(i));
+         }
+         if (val.is_ref()) {
+           out->has_value = true;
+diff --git a/tensorflow/core/common_runtime/gpu/gpu_bfc_allocator.cc b/tensorflow/core/common_runtime/gpu/gpu_bfc_allocator.cc
+index aeb5d33f3c..bac7e13767 100644
+--- a/tensorflow/core/common_runtime/gpu/gpu_bfc_allocator.cc
++++ b/tensorflow/core/common_runtime/gpu/gpu_bfc_allocator.cc
+@@ -1,4 +1,5 @@
+ /* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
++Copyright 2019, 2020. IBM All Rights Reserved.
+ 
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+@@ -14,7 +15,9 @@ limitations under the License.
+ ==============================================================================*/
+ 
+ #include "tensorflow/core/common_runtime/gpu/gpu_bfc_allocator.h"
++#include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"
+ 
++#include "tensorflow/core/framework/tensor.h"
+ #include "tensorflow/core/lib/strings/strcat.h"
+ 
+ namespace tensorflow {
+@@ -83,6 +86,105 @@ GPUBFCAllocator::GPUBFCAllocator(GPUMemAllocator* sub_allocator,
+                                  const string& name)
+     : BFCAllocator(sub_allocator, total_memory,
+                    GPUBFCAllocator::GetAllowGrowthValue(gpu_options), name,
+-                   GPUBFCAllocator::GetGarbageCollectionValue()) {}
++                   GPUBFCAllocator::GetGarbageCollectionValue()),
++      stream_exec_(sub_allocator->stream_executor()) {
++  if (gpu_options.experimental().lms_enabled()) {
++    SetLMSConfig(true, gpu_options.experimental().lms_defrag_enabled());
++    H2D_stream_ = new se::Stream(stream_exec_);
++    H2D_stream_->Init();
++    D2H_stream_ = new se::Stream(stream_exec_);
++    D2H_stream_->Init();
++    event_mgr_ = EventMgrFactory::Singleton()->GetEventMgr(stream_exec_, gpu_options);
++  }
++}
++
++void GPUBFCAllocator::SetStreams(se::Stream* compute) {
++  compute_stream_ = compute;
++}
++
++void* GPUBFCAllocator::Pagein(const LMSTensorBuffer *buf) {
++  size_t nbytes = buf->size();
++  void *host_ptr = buf->GetHostPtr();
++  void *device_ptr = AllocateRaw(Allocator::kAllocatorAlignment, nbytes);
++
++  VLOG(2) << "PAGEIN  <- " << (void*)buf << " (" << nbytes << ")";
++  se::DeviceMemoryBase dst(device_ptr, nbytes);
++  auto result = stream_exec_->SynchronousMemcpyH2D(host_ptr, nbytes, &dst);
++  CHECK(result.ok());
++  return device_ptr;
++}
++
++void* GPUBFCAllocator::PageinAsync(const LMSTensorBuffer *buf,
++                                   const std::function<void()>& done) {
++  size_t nbytes = buf->size();
++  void *host_ptr = buf->GetHostPtr();
++  void *device_ptr = buf->GetDevicePtr();
++
++  if (device_ptr == nullptr) {
++    device_ptr = AllocateRaw(Allocator::kAllocatorAlignment, nbytes);
++  }
++
++  VLOG(2) << "PAGEIN  <- " << (void*)buf << " (" << nbytes << ") ASYNC";
++  se::DeviceMemoryBase dst(device_ptr, nbytes);
++
++  // Wait for the compute stream to make sure the device buffer is truly available.
++  H2D_stream_->ThenWaitFor(compute_stream_);
++
++  H2D_stream_->ThenMemcpy(&dst, host_ptr, nbytes);
++  event_mgr_->ThenExecute(H2D_stream_,
++                          [this, done]() {
++                            CHECK(this->H2D_stream_->ok());
++                            done();
++                          });
++  return device_ptr;
++}
++
++void* GPUBFCAllocator::Pageout(const LMSTensorBuffer *buf) {
++  size_t nbytes = buf->size();
++  void *device_ptr = buf->GetDevicePtr();
++  void *host_ptr = buf->GetHostPtr();
++  if (host_ptr == nullptr) {
++    host_ptr = host_allocator()->AllocateRaw(Allocator::kAllocatorAlignment, nbytes);
++  }
++
++  VLOG(2) << "-> PAGEOUT " << (void*)buf << " (" << nbytes << ")";
++  const se::DeviceMemoryBase src(device_ptr, nbytes);
++  auto result = stream_exec_->SynchronousMemcpyD2H(src, nbytes, host_ptr);
++  CHECK(result.ok());
++  return host_ptr;
++}
++
++void* GPUBFCAllocator::PageoutAsync(const LMSTensorBuffer *buf,
++                                    const std::function<void()>& done) {
++  size_t nbytes = buf->size();
++  void *device_ptr = buf->GetDevicePtr();
++  void *host_ptr = buf->GetHostPtr();
++  if (host_ptr == nullptr) {
++    host_ptr = host_allocator()->AllocateRaw(Allocator::kAllocatorAlignment, nbytes);
++  }
++
++  VLOG(2) << "-> PAGEOUT " << (void*)buf << " (" << nbytes << ") ASYNC";
++  const se::DeviceMemoryBase src(device_ptr, nbytes);
++
++  // Wait for the compute stream to make sure the data is available.
++  D2H_stream_->ThenWaitFor(compute_stream_);
++
++  D2H_stream_->ThenMemcpy(host_ptr, src, nbytes);
++  event_mgr_->ThenExecute(D2H_stream_,
++                          [this, done]() {
++                            CHECK(this->D2H_stream_->ok());
++                            done();
++                          });
++  return host_ptr;
++}
++
++void GPUBFCAllocator::HostMemoryDeallocate(void *host_ptr) {
++  host_allocator()->DeallocateRaw(host_ptr);
++}
++
++void GPUBFCAllocator::EnsureHostAllocator() {
++  std::call_once(host_allocator_init_,
++                 [&] { host_allocator_ = GPUProcessState::singleton()->GetGpuHostAllocator(0); });
++}
+ 
+ }  // namespace tensorflow
+diff --git a/tensorflow/core/common_runtime/gpu/gpu_bfc_allocator.h b/tensorflow/core/common_runtime/gpu/gpu_bfc_allocator.h
+index 02b1a7418d..aebb96b4c0 100644
+--- a/tensorflow/core/common_runtime/gpu/gpu_bfc_allocator.h
++++ b/tensorflow/core/common_runtime/gpu/gpu_bfc_allocator.h
+@@ -1,4 +1,5 @@
+ /* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
++Copyright 2019, 2020. IBM All Rights Reserved.
+ 
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+@@ -22,7 +23,9 @@ limitations under the License.
+ #include <vector>
+ 
+ #include "tensorflow/core/common_runtime/bfc_allocator.h"
++#include "tensorflow/core/common_runtime/gpu/gpu_event_mgr.h"
+ #include "tensorflow/core/common_runtime/gpu/gpu_mem_allocator.h"
++#include "tensorflow/core/platform/stream_executor.h"
+ #include "tensorflow/core/platform/thread_annotations.h"
+ #include "tensorflow/core/platform/types.h"
+ #include "tensorflow/core/protobuf/config.pb.h"
+@@ -39,6 +42,13 @@ class GPUBFCAllocator : public BFCAllocator {
+                   const GPUOptions& gpu_options, const string& name);
+   ~GPUBFCAllocator() override {}
+ 
++  void SetStreams(se::Stream* compute) override;
++  void* Pagein(const LMSTensorBuffer *buf) override;
++  void* PageinAsync(const LMSTensorBuffer *buf, const std::function<void()>& done) override;
++  void* Pageout(const LMSTensorBuffer *buf) override;
++  void* PageoutAsync(const LMSTensorBuffer *buf, const std::function<void()>& done) override;
++  void HostMemoryDeallocate(void *host_ptr) override;
++
+   TF_DISALLOW_COPY_AND_ASSIGN(GPUBFCAllocator);
+ 
+ #ifdef TENSORFLOW_MEM_DEBUG
+@@ -48,6 +58,21 @@ class GPUBFCAllocator : public BFCAllocator {
+  private:
+   static bool GetAllowGrowthValue(const GPUOptions& gpu_options);
+   static bool GetGarbageCollectionValue();
++
++  // Large Model Support
++  se::StreamExecutor* stream_exec_;  // not owned, non-null
++  se::Stream* H2D_stream_ = nullptr;
++  se::Stream* D2H_stream_ = nullptr;
++  se::Stream* compute_stream_ = nullptr;
++  EventMgr* event_mgr_ = nullptr;
++  Allocator* host_allocator_ = nullptr;
++
++  void EnsureHostAllocator();
++  std::once_flag host_allocator_init_;
++  inline Allocator* host_allocator() {
++    if (host_allocator_ == nullptr) EnsureHostAllocator();
++    return host_allocator_;
++  }
+ };
+ 
+ }  // namespace tensorflow
+diff --git a/tensorflow/core/common_runtime/gpu/gpu_debug_allocator.cc b/tensorflow/core/common_runtime/gpu/gpu_debug_allocator.cc
+index a27294fc5e..47ad4ccbfd 100644
+--- a/tensorflow/core/common_runtime/gpu/gpu_debug_allocator.cc
++++ b/tensorflow/core/common_runtime/gpu/gpu_debug_allocator.cc
+@@ -138,6 +138,10 @@ absl::optional<AllocatorStats> GPUDebugAllocator::GetStats() {
+ 
+ void GPUDebugAllocator::ClearStats() { base_allocator_->ClearStats(); }
+ 
++LMSAllocator* GPUDebugAllocator::AsLMSAllocator() {
++  return base_allocator_->AsLMSAllocator();
++}
++
+ bool GPUDebugAllocator::CheckHeader(void* ptr) {
+   return CheckMask(stream_exec_, static_cast<char*>(ptr) - MASK_BYTES,
+                    before_mask);
+@@ -214,4 +218,8 @@ absl::optional<AllocatorStats> GPUNanResetAllocator::GetStats() {
+ 
+ void GPUNanResetAllocator::ClearStats() { base_allocator_->ClearStats(); }
+ 
++LMSAllocator* GPUNanResetAllocator::AsLMSAllocator() {
++  return base_allocator_->AsLMSAllocator();
++}
++
+ }  // namespace tensorflow
+diff --git a/tensorflow/core/common_runtime/gpu/gpu_debug_allocator.h b/tensorflow/core/common_runtime/gpu/gpu_debug_allocator.h
+index 09adc45e6d..c8ac830941 100644
+--- a/tensorflow/core/common_runtime/gpu/gpu_debug_allocator.h
++++ b/tensorflow/core/common_runtime/gpu/gpu_debug_allocator.h
+@@ -45,6 +45,7 @@ class GPUDebugAllocator : public Allocator {
+   int64 AllocationId(const void* ptr) const override;
+   absl::optional<AllocatorStats> GetStats() override;
+   void ClearStats() override;
++  LMSAllocator* AsLMSAllocator() override;
+ 
+   // For testing.
+   bool CheckHeader(void* ptr);
+@@ -73,6 +74,7 @@ class GPUNanResetAllocator : public Allocator {
+   size_t AllocatedSize(const void* ptr) const override;
+   absl::optional<AllocatorStats> GetStats() override;
+   void ClearStats() override;
++  LMSAllocator* AsLMSAllocator() override;
+ 
+  private:
+   Allocator* base_allocator_ = nullptr;  // owned
+diff --git a/tensorflow/core/common_runtime/gpu/gpu_device.cc b/tensorflow/core/common_runtime/gpu/gpu_device.cc
+index f334311492..5d2c7f55da 100644
+--- a/tensorflow/core/common_runtime/gpu/gpu_device.cc
++++ b/tensorflow/core/common_runtime/gpu/gpu_device.cc
+@@ -403,6 +403,9 @@ Status BaseGPUDevice::Init(const SessionOptions& options) {
+         timestamped_allocator_ ? gpu_allocator_ : nullptr, em_));
+   }
+ 
++  LMSAllocator* lms_allocator = gpu_allocator_->AsLMSAllocator();
++  if (lms_allocator) lms_allocator->SetStreams(stream_->compute);
++
+   gpu_device_info_ = new GpuDeviceInfo;
+   gpu_device_info_->stream = stream_->compute;
+   gpu_device_info_->default_context = device_context_;
+diff --git a/tensorflow/core/common_runtime/gpu/gpu_event_mgr_test.cc b/tensorflow/core/common_runtime/gpu/gpu_event_mgr_test.cc
+index 966956dd5a..35db86306a 100644
+--- a/tensorflow/core/common_runtime/gpu/gpu_event_mgr_test.cc
++++ b/tensorflow/core/common_runtime/gpu/gpu_event_mgr_test.cc
+@@ -96,7 +96,7 @@ static std::atomic_int_fast64_t live_tensor_bytes(0);
+ class TestTensorBuffer : public TensorBuffer {
+  public:
+   explicit TestTensorBuffer(size_t bytes)
+-      : TensorBuffer(nullptr), bytes_(bytes) {
++      : bytes_(bytes) {
+     live_tensor_bytes += bytes_;
+   }
+   ~TestTensorBuffer() override { live_tensor_bytes -= bytes_; }
+@@ -104,6 +104,7 @@ class TestTensorBuffer : public TensorBuffer {
+   size_t size() const override { return bytes_; }
+ 
+   // Not used in this test
++  void* data() const override { return nullptr; }
+   TensorBuffer* root_buffer() override { return nullptr; }
+   void FillAllocationDescription(AllocationDescription* arg) const override {}
+ 
+diff --git a/tensorflow/core/common_runtime/gpu/gpu_mem_allocator.h b/tensorflow/core/common_runtime/gpu/gpu_mem_allocator.h
+index e14f2d9377..4124f4cf5d 100644
+--- a/tensorflow/core/common_runtime/gpu/gpu_mem_allocator.h
++++ b/tensorflow/core/common_runtime/gpu/gpu_mem_allocator.h
+@@ -65,6 +65,8 @@ class GPUMemAllocator : public SubAllocator {
+     }
+   }
+ 
++  se::StreamExecutor* stream_executor() { return stream_exec_; }
++
+  private:
+   se::StreamExecutor* stream_exec_;  // not owned, non-null
+   const PlatformGpuId gpu_id_;
+diff --git a/tensorflow/core/framework/allocator.cc b/tensorflow/core/framework/allocator.cc
+index 1695aed7f8..ff31d5fd77 100644
+--- a/tensorflow/core/framework/allocator.cc
++++ b/tensorflow/core/framework/allocator.cc
+@@ -1,4 +1,5 @@
+ /* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
++Copyright 2019, 2020. IBM All Rights Reserved.
+ 
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+@@ -34,13 +35,25 @@ thread_local uint64 pending_step_id = 0;
+ 
+ string AllocatorStats::DebugString() const {
+   return strings::Printf(
+-      "Limit:        %20lld\n"
+-      "InUse:        %20lld\n"
+-      "MaxInUse:     %20lld\n"
+-      "NumAllocs:    %20lld\n"
+-      "MaxAllocSize: %20lld\n",
++      "Limit:              %20lld\n"
++      "InUse:              %20lld\n"
++      "MaxInUse:           %20lld\n"
++      "NumAllocs:          %20lld\n"
++      "MaxAllocSize:       %20lld\n"
++      "BytesInactive:      %20lld\n"
++      "BytesActive:        %20lld\n"
++      "PeakBytesActive:    %20lld\n"
++      "BytesReclaimed:     %20lld\n"
++      "NumSingleReclaims:  %20lld\n"
++      "NumFullReclaims:    %20lld\n"
++      "NumDefrags:         %20lld\n"
++      "BytesDefragged:     %20lld\n",
+       this->bytes_limit ? *this->bytes_limit : 0, this->bytes_in_use,
+-      this->peak_bytes_in_use, this->num_allocs, this->largest_alloc_size);
++      this->peak_bytes_in_use, this->num_allocs, this->largest_alloc_size,
++      this->bytes_inactive, this->bytes_active(), this->peak_bytes_active,
++      this->bytes_reclaimed, this->num_single_reclaims,
++      this->num_full_reclaims, this->num_defragmentations,
++      this->bytes_defragged);
+ }
+ 
+ constexpr size_t Allocator::kAllocatorAlignment;
+diff --git a/tensorflow/core/framework/allocator.h b/tensorflow/core/framework/allocator.h
+index 2e239a4d6d..eacd54a358 100644
+--- a/tensorflow/core/framework/allocator.h
++++ b/tensorflow/core/framework/allocator.h
+@@ -1,4 +1,5 @@
+ /* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
++Copyright 2019, 2020. IBM All Rights Reserved.
+ 
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+@@ -30,6 +31,10 @@ limitations under the License.
+ #include "tensorflow/core/platform/numa.h"
+ #include "tensorflow/core/platform/types.h"
+ 
++namespace stream_executor {
++class Stream;
++}  // namespace stream_executor
++
+ namespace tensorflow {
+ 
+ // Attributes for a single allocation call. Different calls to the same
+@@ -106,17 +111,36 @@ struct AllocatorStats {
+   // if such a limit is known.
+   absl::optional<int64> bytes_reservable_limit;
+ 
++  // Stats for LMS
++  int64 bytes_inactive;      // Number of inactive bytes (available for reclaim)
++  int64 bytes_active() const { return bytes_in_use - bytes_inactive; }
++  int64 peak_bytes_active;   // The peak active bytes
++  int64 bytes_reclaimed;     // Number of bytes transferred (D2H)
++  int64 num_single_reclaims; // Number of single tensor reclaimations performed
++  int64 num_full_reclaims;   // Number of calls to reclaim all inactive bytes
++  int64 num_defragmentations;// Number of calls to defragment memory
++  int64 bytes_defragged;     // Number of bytes transferred (D2H) during defrags
++
+   AllocatorStats()
+       : num_allocs(0),
+         bytes_in_use(0),
+         peak_bytes_in_use(0),
+         largest_alloc_size(0),
+         bytes_reserved(0),
+-        peak_bytes_reserved(0) {}
++        peak_bytes_reserved(0),
++        bytes_inactive(0),
++        peak_bytes_active(0),
++        bytes_reclaimed(0),
++        num_single_reclaims(0),
++        num_full_reclaims(0),
++        num_defragmentations(0),
++        bytes_defragged(0) {}
+ 
+   string DebugString() const;
+ };
+ 
++class LMSAllocator;
++
+ // Allocator is an abstract interface for allocating and deallocating
+ // device memory.
+ class Allocator {
+@@ -227,6 +251,28 @@ class Allocator {
+   virtual void ClearStats() {}
+ 
+   virtual void SetSafeFrontier(uint64 count) {}
++
++  virtual LMSAllocator* AsLMSAllocator() { return nullptr; }
++};
++
++template <typename T>
++class IntrusiveListHook;
++class LMSTensorBuffer;
++
++class LMSAllocator : public Allocator {
++ public:
++  virtual void SetStreams(stream_executor::Stream* compute) {}
++  virtual bool ReclaimListAdd(void* ptr, IntrusiveListHook<LMSTensorBuffer>* hook) { return false; }
++  virtual bool ReclaimListRemove(void* ptr, IntrusiveListHook<LMSTensorBuffer>* hook) { return false; }
++  virtual void ReclaimListNotify() {}
++  virtual void* Pagein(const LMSTensorBuffer* buf) { return nullptr; }
++  virtual void* PageinAsync(const LMSTensorBuffer* buf, const std::function<void()>& done) { return nullptr; }
++  virtual void* Pageout(const LMSTensorBuffer* buf) { return nullptr; }
++  virtual void* PageoutAsync(const LMSTensorBuffer* buf, const std::function<void()>& done) { return nullptr; }
++  virtual void HostMemoryDeallocate(void* host_ptr) {}
++  virtual void OccupyChunk(IntrusiveListHook<LMSTensorBuffer>* hook) {};
++  virtual void VacateChunk(IntrusiveListHook<LMSTensorBuffer>* hook) {};
++
+ };
+ 
+ // An implementation of Allocator that delegates all calls to another Allocator.
+@@ -393,6 +439,70 @@ class SubAllocator {
+   const std::vector<Visitor> free_visitors_;
+ };
+ 
++// IntrusiveList and IntrusiveListHook are used to manage the set of
++// inactive tensors for LMS implementations.
++//
++// Element objects embed the IntrustiveListHook, which provides the
++// following properties:
++//   1. Insertion and removal operations are O(1) and require no
++//      memory allocation or deletion.
++//   2. Element destruction is valid and can be performed safely
++//      regardless of list membership.
++template <typename T>
++class IntrusiveListHook {
++ public:
++  IntrusiveListHook(T *elem) : elem_(elem) {
++    next_ = prev_ = this;
++  }
++  ~IntrusiveListHook() {
++    remove();
++  }
++
++  bool attached() const { return next_ != this; }
++  bool detached() const { return next_ == this; }
++
++  void insertbefore(IntrusiveListHook<T>* x) {
++    CHECK(!x->attached());
++    x->prev_ = prev_;
++    x->next_ = this;
++    prev_->next_ = x;
++    prev_ = x;
++  }
++
++  bool remove() {
++    if (!attached()) return false;
++
++    prev_->next_ = next_;
++    next_->prev_ = prev_;
++    next_ = prev_ = this;
++    return true;
++  }
++  IntrusiveListHook<T>* next() const { return next_; }
++  IntrusiveListHook<T>* prev() const { return prev_; }
++  T* elem() const { return elem_; }
++
++ private:
++  IntrusiveListHook<T>* next_;
++  IntrusiveListHook<T>* prev_;
++  T* elem_;
++};
++
++template <typename T>
++class IntrusiveList {
++ public:
++  IntrusiveList() : anchor_(nullptr) {}
++  ~IntrusiveList() {}
++  bool empty() const { return anchor_.detached(); }
++  void append(IntrusiveListHook<T>* x) { anchor_.insertbefore(x); }
++  void prepend(IntrusiveListHook<T>* x) { anchor_.next()->insertbefore(x); }
++  IntrusiveListHook<T>* head() const { return anchor_.next(); }
++  IntrusiveListHook<T>* tail() const { return anchor_.prev(); }
++  const IntrusiveListHook<T>* terminator() const { return &anchor_; }
++
++ private:
++  IntrusiveListHook<T> anchor_;
++};
++
+ }  // namespace tensorflow
+ 
+ #endif  // TENSORFLOW_CORE_FRAMEWORK_ALLOCATOR_H_
+diff --git a/tensorflow/core/framework/op_kernel.cc b/tensorflow/core/framework/op_kernel.cc
+index 66bb57f736..9d3e10c0f9 100644
+--- a/tensorflow/core/framework/op_kernel.cc
++++ b/tensorflow/core/framework/op_kernel.cc
+@@ -1,4 +1,5 @@
+ /* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
++Copyright 2019, 2020. IBM All Rights Reserved.
+ 
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+@@ -294,9 +295,28 @@ OpKernelContext::OpKernelContext(Params* params, int num_outputs)
+   if (params_->record_tensor_accesses) {
+     referenced_tensors_.Init();
+   }
++
++  if (VLOG_IS_ON(2)) {
++    if (op_kernel().AsAsync() != nullptr)
++      LOG(INFO) << "OpKernelContext \"" << op_kernel().name() << "\" (async)";
++    else
++      LOG(INFO) << "OpKernelContext \"" << op_kernel().name() << "\"";
++  }
++  for (const TensorValue& value : *params_->inputs) {
++    if (value.tensor != nullptr) {
++      pin_tensor(value.tensor);
++    }
++  }
+ }
+ 
+ OpKernelContext::~OpKernelContext() {
++  // TODO(mtbrandy): consider skipping unpin for any tensors that are
++  // about to be destroyed to avoid add/remove reclaim_list overhead.
++  for (auto buf : pinned_tensors_) {
++    buf->lms_unpin();
++    buf->Unref();
++  }
++
+   for (TensorValue& value : outputs_) {
+     if (!value.is_ref()) {
+       delete value.tensor;
+@@ -727,6 +747,7 @@ Status OpKernelContext::allocate_tensor(
+     LogMemory::RecordTensorAllocation(params_->op_kernel->name(),
+                                       params_->step_id, new_tensor);
+   }
++  pin_tensor(&new_tensor);
+   record_tensor_reference(new_tensor);
+   *out_tensor = std::move(new_tensor);
+   return Status::OK();
+diff --git a/tensorflow/core/framework/op_kernel.h b/tensorflow/core/framework/op_kernel.h
+index 8372359e7a..35fec06c25 100644
+--- a/tensorflow/core/framework/op_kernel.h
++++ b/tensorflow/core/framework/op_kernel.h
+@@ -1323,6 +1323,16 @@ class OpKernelContext {
+   // Constructed only if <params->record_tensor_accesses>.
+   ManualConstructor<UniqueTensorReferences> referenced_tensors_ GUARDED_BY(mu_);
+ 
++  // Large Model Support
++  gtl::InlinedVector<TensorBuffer*, 4> pinned_tensors_;
++  void pin_tensor(Tensor* tensor) {
++    TensorBuffer *buf = tensor->buf_;
++    if (buf != nullptr && buf->lms_pin()) {
++      buf->Ref();
++      pinned_tensors_.push_back(buf);
++    }
++  }
++
+   // The following data members are only used when allocation tracking is
+   // enabled.
+   mutable mutex stats_mu_;
+diff --git a/tensorflow/core/framework/tensor.cc b/tensorflow/core/framework/tensor.cc
+index 59cab0fb5a..f5abd6105e 100644
+--- a/tensorflow/core/framework/tensor.cc
++++ b/tensorflow/core/framework/tensor.cc
+@@ -1,4 +1,5 @@
+ /* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
++Copyright 2019, 2020. IBM All Rights Reserved.
+ 
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+@@ -29,6 +30,8 @@ limitations under the License.
+ 
+ #include "tensorflow/core/framework/tensor.h"
+ 
++#include <atomic>
++
+ #include "absl/strings/escaping.h"
+ #include "tensorflow/core/framework/allocation_description.pb.h"
+ #include "tensorflow/core/framework/log_memory.h"
+@@ -50,6 +53,7 @@ limitations under the License.
+ #include "tensorflow/core/lib/strings/strcat.h"
+ #include "tensorflow/core/platform/logging.h"
+ #include "tensorflow/core/platform/macros.h"
++#include "tensorflow/core/platform/mutex.h"
+ #include "tensorflow/core/platform/protobuf.h"
+ #include "tensorflow/core/platform/tensor_coding.h"
+ #include "tensorflow/core/platform/types.h"
+@@ -78,11 +82,68 @@ bool TensorBuffer::GetAllocatedBytes(size_t* out_bytes) const {
+ 
+ namespace {
+ 
++// Large Model Support
++class BufferBase;
++class LMSTensorBufferImpl : public LMSTensorBuffer {
++ public:
++  LMSTensorBufferImpl(BufferBase *buf, LMSAllocator* alloc) :
++    buf_(buf), alloc_(alloc), pincount_(0), list_hook_(this) {
++      alloc_->OccupyChunk(&list_hook_);
++    }
++  ~LMSTensorBufferImpl();
++
++  void ensure_data();
++  void pin();
++  void unpin();
++  void* TryPageout() override;
++  void Pagein(void* ptr) override;
++  size_t size() const override;
++  void* GetHostPtr() const override;
++  void* GetDevicePtr() const override;
++
++private:
++  void ensure_data_internal();
++  void transition_wait(mutex_lock& l);
++  void transition_complete();
++
++  enum class State : uint16_t {
++    kInit,
++    kActive,
++    kInactive,
++    kSynced,
++    kReclaimed,
++  };
++  enum class Transition : uint16_t {
++    kNone,
++    kPagingOut,
++    kPagingIn,
++    kDefragmenting,
++  };
++  BufferBase* const buf_;
++  LMSAllocator* const alloc_;
++  mutex lock_;
++  void* host_data_ GUARDED_BY(lock_) = nullptr;
++  int pincount_ GUARDED_BY(lock_);
++  State state_ GUARDED_BY(lock_) = State::kInit;
++  Transition transition_ GUARDED_BY(lock_) = Transition::kNone;
++  condition_variable transition_cv_;
++  int transition_waiter_ = 0;
++
++  // Guarded by allocator mutex
++  IntrusiveListHook<LMSTensorBuffer> list_hook_;
++};
++
+ // An un-templated base class for Buffer.
+ class BufferBase : public TensorBuffer {
+  public:
+   explicit BufferBase(Allocator* alloc, void* data_ptr)
+-      : TensorBuffer(data_ptr), alloc_(alloc) {}
++      : alloc_(alloc),
++        data_(data_ptr) {
++    LMSAllocator* lms_alloc = alloc->AsLMSAllocator();
++    if (lms_alloc) {
++      lms_.reset(new LMSTensorBufferImpl(this, lms_alloc));
++    }
++  }
+ 
+   TensorBuffer* root_buffer() override { return this; }
+ 
+@@ -114,13 +175,47 @@ class BufferBase : public TensorBuffer {
+     }
+   }
+ 
++  void* data() const override {
++    if (lms_enabled()) lms_->ensure_data();
++    return data_;
++  }
++
++  bool lms_pin() override {
++    if (!lms_enabled()) return false;
++    lms_->pin();
++    return true;
++  }
++
++  void lms_unpin() override {
++    DCHECK(lms_enabled());
++    lms_->unpin();
++  }
++
++  void SetGraphId(int64 id) const override {
++    if (lms_enabled()) lms_->SetGraphId(id);
++  }
++
++  bool GraphId(int64* id) const override {
++    if (!lms_enabled()) return false;
++    return lms_->GraphId(id);
++  }
++
++  bool has_data() const override {
++    return lms_enabled() || data_ != nullptr;
++  }
++
+  protected:
+   void RecordDeallocation() {
+-    LogMemory::RecordTensorDeallocation(alloc_->AllocationId(data()),
++    LogMemory::RecordTensorDeallocation(alloc_->AllocationId(data_),
+                                         alloc_->Name());
+   }
+ 
+   Allocator* const alloc_;
++  void* data_;
++  std::unique_ptr<LMSTensorBufferImpl> lms_;
++
++  friend class LMSTensorBufferImpl; // For access to data_
++  bool lms_enabled() const { return lms_.get() != nullptr; }
+ };
+ 
+ // Typed ref-counted buffer: T[n].
+@@ -133,7 +228,6 @@ class Buffer : public BufferBase {
+   size_t size() const override { return sizeof(T) * elem_; }
+ 
+  private:
+-  T* data_;
+   int64 elem_;
+ 
+   ~Buffer() override;
+@@ -476,11 +570,18 @@ Buffer<T>::Buffer(Allocator* a, int64 n,
+ 
+ template <typename T>
+ Buffer<T>::~Buffer() {
+-  if (data()) {
++  if (lms_enabled()) {
++    // We don't need/want to perform page-in during destruction (there
++    // is no Dtor on the host for device memory), thus we tear down the
++    // LMS state here.
++    lms_.reset(nullptr);
++  }
++
++  if (data_) {
+     if (LogMemory::IsEnabled()) {
+       RecordDeallocation();
+     }
+-    TypedAllocator::Deallocate<T>(alloc_, static_cast<T*>(data()), elem_);
++    TypedAllocator::Deallocate<T>(alloc_, static_cast<T*>(data_), elem_);
+   }
+ }
+ 
+@@ -647,7 +748,7 @@ Tensor::Tensor(DataType type, const TensorShape& shape, TensorBuffer* buf)
+ }
+ 
+ bool Tensor::IsInitialized() const {
+-  return (buf_ != nullptr && buf_->data() != nullptr) ||
++  return (buf_ != nullptr && buf_->has_data()) ||
+          shape_.num_elements() == 0;
+ }
+ 
+@@ -710,6 +811,14 @@ Status Tensor::BitcastFrom(const Tensor& other, DataType dtype,
+   return Status::OK();
+ }
+ 
++void Tensor::SetGraphId(int64 id) const {
++  if (buf_ != nullptr) buf_->SetGraphId(id);
++}
++
++bool Tensor::GraphId(int64* id) const {
++  return (buf_ != nullptr) && buf_->GraphId(id);
++}
++
+ // Notice that buf_ either points to a regular TensorBuffer or a SubBuffer.
+ // For the latter case, we have to make sure that the refcount is
+ // one both for the SubBuffer _and_ the underlying TensorBuffer.
+@@ -771,7 +880,7 @@ Tensor::Tensor(Allocator* a, DataType type, const TensorShape& shape)
+   if (shape_.num_elements() > 0 || a->AllocatesOpaqueHandle()) {
+     CASES(type, buf_ = new Buffer<T>(a, shape.num_elements()));
+   }
+-  if (buf_ != nullptr && buf_->data() != nullptr && LogMemory::IsEnabled()) {
++  if (buf_ != nullptr && buf_->has_data() && LogMemory::IsEnabled()) {
+     LogMemory::RecordTensorAllocation("Unknown", LogMemory::UNKNOWN_STEP_ID,
+                                       *this);
+   }
+@@ -786,7 +895,7 @@ Tensor::Tensor(Allocator* a, DataType type, const TensorShape& shape,
+     CASES(type, buf_ = new Buffer<T>(a, shape.num_elements(), allocation_attr));
+   }
+   if (!allocation_attr.allocation_will_be_logged && buf_ != nullptr &&
+-      buf_->data() != nullptr && LogMemory::IsEnabled()) {
++      buf_->has_data() && LogMemory::IsEnabled()) {
+     LogMemory::RecordTensorAllocation("Unknown (with attributes)",
+                                       LogMemory::UNKNOWN_STEP_ID, *this);
+   }
+@@ -828,8 +937,8 @@ class SubBuffer : public TensorBuffer {
+  public:
+   // This buffer is an alias to buf[delta, delta + n).
+   SubBuffer(TensorBuffer* buf, int64 delta, int64 n)
+-      : TensorBuffer(buf->base<T>() + delta),
+-        root_(buf->root_buffer()),
++      : root_(buf->root_buffer()),
++        delta_(delta),
+         elem_(n) {
+     // Sanity check. The caller should ensure the sub buffer is valid.
+     CHECK_LE(root_->base<T>(), this->base<T>());
+@@ -841,6 +950,7 @@ class SubBuffer : public TensorBuffer {
+     root_->Ref();
+   }
+ 
++  void* data() const override { return root_->base<T>() + delta_; }
+   size_t size() const override { return sizeof(T) * elem_; }
+   TensorBuffer* root_buffer() override { return root_; }
+   bool GetAllocatedBytes(size_t* out_bytes) const override {
+@@ -849,10 +959,15 @@ class SubBuffer : public TensorBuffer {
+   void FillAllocationDescription(AllocationDescription* proto) const override {
+     root_->FillAllocationDescription(proto);
+   }
++  bool has_data() const override { return root_->has_data(); }
++  bool lms_pin() override { return root_->lms_pin(); }
++  void lms_unpin() override { root_->lms_unpin(); }
++  void SetGraphId(int64 id) const override { root_->SetGraphId(id); }
++  bool GraphId(int64* id) const override { return root_->GraphId(id); }
+ 
+  private:
+   TensorBuffer* root_;
+-  T* data_;
++  int64 delta_;
+   int64 elem_;
+ 
+   ~SubBuffer() override { root_->Unref(); }
+@@ -938,7 +1053,7 @@ bool Tensor::FromProto(Allocator* a, const TensorProto& proto) {
+   buf_ = p;
+   // TODO(misard) add tracking of which kernels and steps are calling
+   // FromProto.
+-  if (buf_ != nullptr && buf_->data() != nullptr && LogMemory::IsEnabled()) {
++  if (buf_ != nullptr && buf_->has_data() && LogMemory::IsEnabled()) {
+     LogMemory::RecordTensorAllocation("Unknown (from Proto)",
+                                       LogMemory::UNKNOWN_STEP_ID, *this);
+   }
+@@ -1253,7 +1368,7 @@ string Tensor::DeviceSafeDebugString() const {
+ void Tensor::FillDescription(TensorDescription* description) const {
+   description->set_dtype(dtype());
+   shape().AsProto(description->mutable_shape());
+-  if (buf_ != nullptr && buf_->data() != nullptr) {
++  if (buf_ != nullptr && buf_->has_data()) {
+     buf_->FillAllocationDescription(
+         description->mutable_allocation_description());
+   }
+@@ -1285,4 +1400,189 @@ gtl::InlinedVector<int64, 4> Tensor::ComputeFlatOuterDims(
+   return out_dims;
+ }
+ 
++LMSTensorBufferImpl::~LMSTensorBufferImpl() {
++  if (buf_->data_ != nullptr) {
++    alloc_->VacateChunk(&list_hook_);
++  }
++  DCHECK(transition_ == Transition::kNone);
++  if (pincount_ == 0 && (state_ == State::kInactive || state_ == State::kSynced)) {
++    alloc_->ReclaimListRemove(buf_->data_, &list_hook_);
++  }
++  if (host_data_ != nullptr) {
++    alloc_->HostMemoryDeallocate(host_data_);
++  }
++}
++
++inline void LMSTensorBufferImpl::ensure_data() {
++  mutex_lock l(lock_);
++  if (pincount_ == 0 && state_ != State::kInit) {
++    VLOG(2) << "   ACCESS " << (void*)this;
++    ensure_data_internal();
++    state_ = State::kInit;
++  }
++  DCHECK(buf_->data_ != nullptr);
++  if ((transition_ == Transition::kPagingIn) ||
++      (transition_ == Transition::kDefragmenting)) {
++    transition_wait(l);
++  }
++}
++
++inline void LMSTensorBufferImpl::pin() {
++  mutex_lock l(lock_);
++  if (++pincount_ == 1) {
++    VLOG(2) << "   PIN    " << (void*)this;
++    if (state_ != State::kInit) {
++      ensure_data_internal();
++    }
++    state_ = State::kActive;
++  }
++  DCHECK(buf_->data_ != nullptr);
++  DCHECK(state_ == State::kActive);
++  DCHECK(pincount_ > 0);
++}
++
++inline void LMSTensorBufferImpl::unpin() {
++  mutex_lock l(lock_);
++  DCHECK(buf_->data_ != nullptr);
++  DCHECK(state_ == State::kActive);
++  DCHECK(pincount_ > 0);
++  if (--pincount_ == 0) {
++    bool pageout = alloc_->ReclaimListAdd(buf_->data_, &list_hook_);
++    if (pageout && transition_ == Transition::kNone) {
++      // Speculative pageout requested by allocator
++      transition_ = Transition::kPagingOut;
++      buf_->Ref();
++      host_data_ = alloc_->PageoutAsync(this, [this]() { this->transition_complete(); });
++      DCHECK(host_data_ != nullptr);
++    }
++    state_ = State::kInactive;
++    VLOG(2) << "   UNPIN  " << (void*)this;
++  }
++}
++
++void LMSTensorBufferImpl::Pagein(void* ptr) {
++  mutex_lock l(lock_);
++  // We only pagein to a location if the data pointer is currently null,
++  // and the host_data pointer is not null.
++  DCHECK(buf_->data_ == nullptr);
++  DCHECK(host_data_ != nullptr);
++  DCHECK(ptr != nullptr);
++  // We only allow this operation buffers in the Active or Init states,
++  // which is the pageout-pagein for defrag flow.
++  DCHECK((state_ == State::kActive) || (state_ == State::kInit));
++  DCHECK(transition_ == Transition::kDefragmenting);
++  buf_->data_ = ptr;
++  transition_ = Transition::kPagingIn;
++  buf_->Ref();
++  void* pagedInTo = alloc_->PageinAsync(this, [this]() { this->transition_complete(); });
++  DCHECK(buf_->data_ == pagedInTo);
++}
++
++void* LMSTensorBufferImpl::TryPageout() {
++  mutex_lock l(lock_, std::try_to_lock);
++  if (!l || transition_ != Transition::kNone) {
++    // Inability to acquire the lock means this is likely exiting
++    // the inactive state and thus not a good candidate to reclaim.
++    //
++    // Tensors in transition require waiting on the event, which we shouldn't
++    // to do while holding the allocator lock due to the possibility of deadlock.
++    return nullptr;
++  }
++
++  DCHECK(buf_->data_ != nullptr);
++  // Note: The paging out of Active and Init buffers is for the defragmentation path.
++  if ((state_ == State::kInactive) || (state_ == State::kActive) || (state_ == State::kInit)) {
++    host_data_ = alloc_->Pageout(this);
++  } else {
++    CHECK(state_ == State::kSynced);
++    // Nothing to do
++  }
++  DCHECK(host_data_ != nullptr);
++  void* old_device_ptr = buf_->data_;
++  buf_->data_ = nullptr;
++  // Handle state transitions:
++  switch (state_) {
++  case State::kInactive:
++  case State::kSynced:
++    state_ = State::kReclaimed;
++    break;
++  case State::kInit:
++  case State::kActive:
++    // Active and Init buffers with paged out data are in a transitory
++    // state.
++    transition_ = Transition::kDefragmenting;
++    break;
++  }
++  return old_device_ptr;
++}
++
++inline size_t LMSTensorBufferImpl::size() const {
++  return buf_->size();
++}
++
++inline void* LMSTensorBufferImpl::GetHostPtr() const {
++  return host_data_;
++}
++
++inline void* LMSTensorBufferImpl::GetDevicePtr() const {
++  return buf_->data_;
++}
++
++void LMSTensorBufferImpl::ensure_data_internal() {
++  switch (state_) {
++  case State::kInactive:
++  case State::kSynced:
++    alloc_->ReclaimListRemove(buf_->data_, &list_hook_);
++    break;
++  case State::kReclaimed:
++    DCHECK(buf_->data_ == nullptr);
++    DCHECK(host_data_ != nullptr);
++    transition_ = Transition::kPagingIn;
++    buf_->Ref();
++    buf_->data_ = alloc_->PageinAsync(this, [this]() { this->transition_complete(); });
++    DCHECK(buf_->data_ != nullptr);
++    break;
++  case State::kInit:
++  case State::kActive:
++    // Nothing to do
++    break;
++  }
++}
++
++void LMSTensorBufferImpl::transition_wait(mutex_lock& l) {
++  DCHECK(transition_ != Transition::kNone);
++  if (VLOG_IS_ON(2)) {
++    LOG(INFO) << "transition_wait: wait " << (void*)this << " (" << size() << ")";
++  }
++  transition_waiter_++;
++  do {
++    transition_cv_.wait(l);
++  } while (transition_ != Transition::kNone);
++  transition_waiter_--;
++  if (VLOG_IS_ON(2)) {
++    LOG(INFO) << "transition_wait: notified " << (void*)this << " (" << size() << ")";
++  }
++}
++
++void LMSTensorBufferImpl::transition_complete() {
++  bool inactive = false;
++  {
++    mutex_lock l(lock_);
++    DCHECK(transition_ != Transition::kNone);
++    if (state_ == State::kInactive) {
++      state_ = State::kSynced;
++      inactive = true;
++    }
++    if (transition_ == Transition::kPagingIn) {
++      alloc_->OccupyChunk(&list_hook_);
++    }
++    transition_ = Transition::kNone;
++    if (transition_waiter_)
++      transition_cv_.notify_all();
++  }
++  bool destroyed = buf_->Unref();
++  if (inactive && !destroyed)
++    alloc_->ReclaimListNotify();
++}
++
+ }  // namespace tensorflow
+diff --git a/tensorflow/core/framework/tensor.h b/tensorflow/core/framework/tensor.h
+index 5c7913d36c..9cc7d44ac0 100644
+--- a/tensorflow/core/framework/tensor.h
++++ b/tensorflow/core/framework/tensor.h
+@@ -1,4 +1,5 @@
+ /* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
++Copyright 2019, 2020. IBM All Rights Reserved.
+ 
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+@@ -58,15 +59,11 @@ Status MaybeMoveSliceToElement(Tensor* parent, Tensor* element, int64 index);
+ /// Interface to access the raw ref-counted data buffer.
+ class TensorBuffer : public core::RefCounted {
+  public:
+-  explicit TensorBuffer(void* data_ptr) : data_(data_ptr) {}
++  explicit TensorBuffer() {}
+   ~TensorBuffer() override {}
+ 
+   /// \brief data() points to a memory region of size() bytes.
+-  ///
+-  /// NOTE(mrry): The `data()` method is not virtual for performance reasons.
+-  /// It can be called multiple times when the contents of a `Tensor` are
+-  /// accessed, and so making it non-virtual allows the body to be inlined.
+-  void* data() const { return data_; }
++  virtual void* data() const = 0;
+ 
+   /// \brief Size (in bytes) of the buffer.
+   virtual size_t size() const = 0;
+@@ -89,6 +86,38 @@ class TensorBuffer : public core::RefCounted {
+ 
+   /// \brief Whether this TensorBuffer owns the underlying memory.
+   virtual bool OwnsMemory() const { return true; }
++  virtual bool has_data() const { return data() != nullptr; }
++
++  virtual bool lms_pin() { return false; }
++  virtual void lms_unpin() {}
++  virtual void SetGraphId(int64 id) const {}
++  virtual bool GraphId(int64* id) const { return false; }
++};
++
++class LMSTensorBuffer {
++ public:
++  virtual void* TryPageout() = 0;
++  virtual void Pagein(void* ptr) = 0;
++  virtual void* GetHostPtr() const = 0;
++  virtual void* GetDevicePtr() const = 0;
++  virtual size_t size() const = 0;
++  void SetGraphId(int64 id) {
++    graph_id_ = id;
++  }
++  bool GraphId(int64* id) const {
++    if (graph_id_ == 0) return false;
++    *id = graph_id_;
++    return true;
++  }
++ private:
++  int64 graph_id_ = 0;
++};
++
++class SimpleTensorBufferBase : public TensorBuffer {
++ public:
++  explicit SimpleTensorBufferBase(void* data_ptr) : data_(data_ptr) {}
++  void* data() const override { return data_; }
++  TensorBuffer* root_buffer() override { return this; }
+ 
+  private:
+   void* const data_;
+@@ -632,6 +661,8 @@ class Tensor {
+                               const TensorShape& shape) {
+     TF_CHECK_OK(BitcastFrom(other, dtype, shape));
+   }
++  void SetGraphId(int64 id) const;
++  bool GraphId(int64* id) const;
+ 
+  private:
+   // Returns true if the refcount on buf_ and any possible underlying root
+@@ -940,9 +971,9 @@ inline Tensor::Tensor(Tensor&& other)
+   other.buf_ = nullptr;
+ }
+ 
+-class Tensor::HostScalarTensorBufferBase : public TensorBuffer {
++class Tensor::HostScalarTensorBufferBase : public SimpleTensorBufferBase {
+  public:
+-  using TensorBuffer::TensorBuffer;
++  using SimpleTensorBufferBase::SimpleTensorBufferBase;
+   bool GetAllocatedBytes(size_t* out_bytes) const final;
+   void FillAllocationDescription(AllocationDescription* proto) const final;
+ };
+@@ -957,7 +988,6 @@ struct Tensor::ValueAndTensorBuffer {
+     explicit HostScalarTensorBuffer(void* data)
+         : HostScalarTensorBufferBase(data) {}
+     size_t size() const final { return sizeof(T); }
+-    TensorBuffer* root_buffer() final { return this; }
+ 
+     // Override `operator delete` so that calling `delete this` in
+     // `core::Refcounted::Unref()` for an object of this type will free
+diff --git a/tensorflow/core/protobuf/config.proto b/tensorflow/core/protobuf/config.proto
+index bce52c6443..af6d29b40d 100644
+--- a/tensorflow/core/protobuf/config.proto
++++ b/tensorflow/core/protobuf/config.proto
+@@ -185,6 +185,12 @@ message GPUOptions {
+     // launch an additional kernel will stall until an event
+     // completes.
+     int32 kernel_tracker_max_pending = 9;
++
++    // If true, Large Model support is turned on in eager mode.
++    bool lms_enabled = 10;
++
++    // If true, Large Model support's defragmentation support turned on.
++    bool lms_defrag_enabled = 11;
+   }
+ 
+   // Everything inside experimental is subject to change and is not subject
+diff --git a/tensorflow/lite/delegates/flex/buffer_map.cc b/tensorflow/lite/delegates/flex/buffer_map.cc
+index c2611290c1..d950e554d8 100644
+--- a/tensorflow/lite/delegates/flex/buffer_map.cc
++++ b/tensorflow/lite/delegates/flex/buffer_map.cc
+@@ -26,10 +26,9 @@ namespace tflite {
+ namespace flex {
+ namespace {
+ // A tensor buffer that is allocated, deallocated and populated by TF Lite.
+-class BaseTfLiteTensorBuffer : public tensorflow::TensorBuffer {
+-  using tensorflow::TensorBuffer::TensorBuffer;
++class BaseTfLiteTensorBuffer : public tensorflow::SimpleTensorBufferBase {
++  using tensorflow::SimpleTensorBufferBase::SimpleTensorBufferBase;
+ 
+-  TensorBuffer* root_buffer() override { return this; }
+   void FillAllocationDescription(
+       tensorflow::AllocationDescription* proto) const override {
+     tensorflow::int64 rb = size();
+diff --git a/tensorflow/python/BUILD b/tensorflow/python/BUILD
+index f2ca67521f..0a6e93b5b5 100644
+--- a/tensorflow/python/BUILD
++++ b/tensorflow/python/BUILD
+@@ -708,6 +708,7 @@ cc_library(
+     ],
+ )
+ 
++
+ cc_library(
+     name = "py_func_lib",
+     srcs = ["lib/core/py_func.cc"],
+@@ -1055,6 +1056,7 @@ py_library(
+         ":tensor_util",
+         ":type_spec",
+         ":util",
++        ":bfc_allocator_stats",
+         "//tensorflow/python/eager:context",
+         "//third_party/py/numpy",
+         "@six_archive//:six",
+@@ -5305,6 +5307,18 @@ tf_cuda_library(
+     ],
+ )
+ 
++
++py_library(
++    name = "bfc_allocator_stats",
++    srcs = ["framework/bfc_allocator_stats.py"],
++    srcs_version = "PY2AND3",
++    deps = [
++        ":pywrap_tensorflow",
++        ":util",
++    ],
++)
++
++
+ py_library(
+     name = "pywrap_tensorflow",
+     srcs = [
+@@ -5325,6 +5339,7 @@ tf_py_wrap_cc(
+         "client/tf_session.i",
+         "client/tf_sessionrun_wrapper.i",
+         "framework/python_op_gen.i",
++        "framework/bfc_allocator_stats.i",
+         "grappler/cluster.i",
+         "grappler/cost_analyzer.i",
+         "grappler/item.i",
+@@ -7216,6 +7231,7 @@ py_library(
+     deps = [":pywrap_tensorflow_internal"],
+ )
+ 
++
+ tf_py_test(
+     name = "model_analyzer_test",
+     size = "small",
+diff --git a/tensorflow/python/__init__.py b/tensorflow/python/__init__.py
+index 3bc8704401..4dc219c38e 100644
+--- a/tensorflow/python/__init__.py
++++ b/tensorflow/python/__init__.py
+@@ -77,6 +77,7 @@ from tensorflow.python.framework.versions import *
+ from tensorflow.python.framework import config
+ from tensorflow.python.framework import errors
+ from tensorflow.python.framework import graph_util
++from tensorflow.python.framework import bfc_allocator_stats
+ 
+ # Session
+ from tensorflow.python.client.client_lib import *
+diff --git a/tensorflow/python/eager/context.py b/tensorflow/python/eager/context.py
+index f2ab167e24..aaa3590f9d 100644
+--- a/tensorflow/python/eager/context.py
++++ b/tensorflow/python/eager/context.py
+@@ -1,4 +1,5 @@
+ # Copyright 2017 The TensorFlow Authors. All Rights Reserved.
++# Copyright 2019, 2020. IBM All Rights Reserved.
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License");
+ # you may not use this file except in compliance with the License.
+@@ -427,6 +428,10 @@ class Context(object):
+     self._enable_mlir_bridge = None
+     self._optimizer_experimental_options = {}
+ 
++    # LMS
++    self._lms_enabled = False
++    self._lms_defrag_enabled = False
++
+     _python_eager_context_create_counter.get_cell().increase_by(1)
+   # pylint: enable=redefined-outer-name
+ 
+@@ -917,6 +922,22 @@ class Context(object):
+     visible_device_list = []
+     virtual_devices = []
+     gpu_index = -1
++
++    # Check Large Model Support configuration
++    lms_enabled = None
++    lms_defrag_enabled = None
++
++    if self._lms_enabled is not None:
++        lms_enabled = self._lms_enabled
++    else:
++        lms_enabled = False
++
++    if self._lms_defrag_enabled is not None:
++        lms_defrag_enabled = self._lms_defrag_enabled
++    else:
++        lms_defrag_enabled = False
++
++
+     memory_growths = set()
+     for dev in self.list_physical_devices("GPU"):
+       gpu_index += 1
+@@ -951,7 +972,9 @@ class Context(object):
+         allow_growth=allow_growth,
+         visible_device_list=",".join(visible_device_list),
+         experimental=config_pb2.GPUOptions.Experimental(
+-            virtual_devices=virtual_devices))
++            virtual_devices=virtual_devices,
++            lms_enabled=lms_enabled,
++            lms_defrag_enabled=lms_defrag_enabled))
+ 
+   @property
+   def function_call_options(self):
+@@ -1281,6 +1304,29 @@ class Context(object):
+ 
+     self._virtual_device_map[dev] = virtual_devices
+ 
++
++  @property
++  def lms_enabled(self):
++    return self._lms_enabled
++
++  @lms_enabled.setter
++  def lms_enabled(self, lms_enabled):
++    self._lms_enabled = lms_enabled
++
++  def get_lms_enabled(self):
++    return self._lms_enabled
++
++  @property
++  def lms_defrag_enabled(self):
++    return self._lms_defrag_enabled
++
++  @lms_defrag_enabled.setter
++  def lms_defrag_enabled(self, lms_defrag_enabled):
++    self._lms_defrag_enabled = lms_defrag_enabled
++
++  def get_lms_defrag_enabled(self):
++    return self._lms_defrag_enabled
++
+   @property
+   def enable_mlir_bridge(self):
+     return self._enable_mlir_bridge
+diff --git a/tensorflow/python/eager/pywrap_tensor.cc b/tensorflow/python/eager/pywrap_tensor.cc
+index 8ed9e04252..850968cff2 100644
+--- a/tensorflow/python/eager/pywrap_tensor.cc
++++ b/tensorflow/python/eager/pywrap_tensor.cc
+@@ -1,4 +1,5 @@
+ /* Copyright 2017 The TensorFlow Authors. All Rights Reserved.
++Copyright 2019, 2020. IBM All Rights Reserved.
+ 
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+@@ -658,6 +659,23 @@ static int EagerTensor_settensor_shape(EagerTensor* self, PyObject* value,
+   return 0;
+ }
+ 
++static PyObject* EagerTensor_graph_id(EagerTensor* self, void* unused) {
++  int64_t id;
++  if (self->handle && TFE_TensorHandle_GraphId(self->handle, &id)) {
++    return PyLong_FromLongLong(id);
++  }
++  Py_INCREF(Py_None);
++  return Py_None;
++}
++
++static int EagerTensor_setgraph_id(EagerTensor* self, PyObject* value,
++                                   void* unused) {
++  if (self->handle) {
++    TFE_TensorHandle_SetGraphId(self->handle, PyLong_AsLongLong(value));
++  }
++  return 0;
++}
++
+ // Function `_copy_to_device`.
+ static PyObject* EagerTensor_copy_to_device(EagerTensor* self, PyObject* args,
+                                             PyObject* kwds) {
+@@ -744,6 +762,9 @@ static PyGetSetDef EagerTensor_getseters[] = {
+     {const_cast<char*>("_tensor_shape"), (getter)EagerTensor_tensor_shape,
+      (setter)EagerTensor_settensor_shape, const_cast<char*>("_tensor_shape"),
+      nullptr},
++    {const_cast<char*>("graph_id"), (getter)EagerTensor_graph_id,
++     (setter)EagerTensor_setgraph_id, const_cast<char*>("graph_id"),
++     nullptr},
+     {nullptr} /* Sentinel */
+ };
+ 
+diff --git a/tensorflow/python/eager/pywrap_tfe_src.cc b/tensorflow/python/eager/pywrap_tfe_src.cc
+index 5b98fe27ed..4c4d67e1a8 100644
+--- a/tensorflow/python/eager/pywrap_tfe_src.cc
++++ b/tensorflow/python/eager/pywrap_tfe_src.cc
+@@ -2903,6 +2903,7 @@ bool OpGradientDoesntRequireOutputIndices(
+           {"Cos", {true, {}}},
+           {"Tan", {true, {}}},
+           {"Add", {true, {}}},
++          {"AddV2", {true, {}}},
+           {"Sub", {true, {}}},
+           {"Mul", {true, {}}},
+           {"Div", {true, {}}},
+@@ -2930,6 +2931,8 @@ bool OpGradientDoesntRequireOutputIndices(
+ 
+           // Ops that don't require a subset of outputs.
+           {"FusedBatchNorm", {false, {0, 1, 2}}},
++          {"FusedBatchNormV2", {false, {0, 1, 2}}},
++          {"FusedBatchNormV3", {false, {0, 1, 2}}},
+       });
+ 
+   auto it = m->find(op_name);
+@@ -2977,6 +2980,8 @@ bool OpGradientDoesntRequireInputIndices(
+ 
+           // Ops that don't require a subset of inputs.
+           {"FusedBatchNorm", {false, {2}}},
++          {"FusedBatchNormV2", {false, {2}}},
++          {"FusedBatchNormV3", {false, {2}}},
+       });
+ 
+   auto it = m->find(op_name);
+diff --git a/tensorflow/python/framework/bfc_allocator_stats.i b/tensorflow/python/framework/bfc_allocator_stats.i
+new file mode 100644
+index 0000000000..c48bae454e
+--- /dev/null
++++ b/tensorflow/python/framework/bfc_allocator_stats.i
+@@ -0,0 +1,401 @@
++/* Copyright 2019, 2020. IBM All Rights Reserved.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++==============================================================================*/
++
++// typemap for gpu ID
++%typemap(in) int gpu_id {
++    $1 = PyLong_AsLong($input);
++}
++
++// typemaps for returned stats
++%typemap(out) int64 {
++    $result = PyLong_FromLongLong($1);
++}
++
++%{
++#include "tensorflow/core/common_runtime/gpu/gpu_process_state.h" // for GPUProcessState class
++#include "tensorflow/core/common_runtime/gpu/gpu_id.h"            // for TfGpuId type
++#include "tensorflow/core/framework/allocator.h"                  // for Allocator class
++#include "tensorflow/core/common_runtime/bfc_allocator.h"         // for BFCAllocator
++#include "tensorflow/core/platform/logging.h"                     // for VLOG
++
++#include <iostream>                                                // for stringstream
++
++absl::optional<tensorflow::AllocatorStats> GetBFCAllocatorStats( int gpu_id )
++{
++
++    tensorflow::GPUProcessState * ps = tensorflow::GPUProcessState::singleton();
++    bool gpu_registered = ps->HasGPUDevice();
++
++    if(gpu_registered)
++    {
++        // placeholder variable for input to `GetGPUAllocator`
++        // It will be ignored as we are making sure the gpu device has been created
++        // before we attempt to get the gpu allocator
++        size_t total_bytes = 1;
++
++        tensorflow::TfGpuId tf_gpu_id(gpu_id);
++        tensorflow::GPUOptions options;
++        std::string bfc = "BFC";
++        options.set_allocator_type(bfc);
++
++        tensorflow::Allocator * allocator = ps->GetGPUAllocator(options,
++                                                    tf_gpu_id,
++                                                    total_bytes);
++
++        std::string name = allocator->Name();
++
++        tensorflow::BFCAllocator * bfc_allocator = static_cast<tensorflow::BFCAllocator *>(allocator);
++
++        return bfc_allocator->GetStats();
++    }
++    else
++    {
++        LOG(ERROR) << "(GetBFCAllocatorStats) No GPU device registered. Skipping getting stats\n";
++        return absl::nullopt;
++    }
++}
++
++int64 getNumAllocs( int gpu_id )
++{
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        result = allocator_stats->num_allocs;
++    }
++    else
++    {
++        LOG(ERROR) << "(getNumAllocs) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++int64 getBytesInUse( int gpu_id )
++{
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        result = allocator_stats->bytes_in_use;
++    }
++    else
++    {
++        LOG(ERROR) << "(getBytesInUse) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++int64 getPeakBytesInUse( int gpu_id )
++{
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        result = allocator_stats->peak_bytes_in_use;
++    }
++    else
++    {
++        LOG(ERROR) << "(getPeakBytesInUse) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++int64 getLargestAllocSize( int gpu_id )
++{
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        result = allocator_stats->largest_alloc_size;
++    }
++    else
++    {
++        LOG(ERROR) << "(getLargestAllocSize) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++int64 getBytesLimit( int gpu_id )
++{
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        if( allocator_stats->bytes_limit.has_value() )
++        {
++            result = allocator_stats->bytes_limit.value();
++        }
++        else
++        {
++            LOG(INFO) << "(getBytesLimit) - Optional value is empty";
++        }
++    }
++    else
++    {
++        LOG(ERROR) << "(getBytesLimit) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++int64 getBytesReserved( int gpu_id )
++{
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        result = allocator_stats->bytes_reserved;
++    }
++    else
++    {
++        LOG(ERROR) << "(getBytesReserved) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++int64 getPeakBytesReserved( int gpu_id )
++{
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        result = allocator_stats->peak_bytes_reserved;
++    }
++    else
++    {
++        LOG(ERROR) << "(getPeakBytesReserved) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++int64 getBytesReservableLimit( int gpu_id )
++{
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        if( allocator_stats->bytes_reservable_limit.has_value() )
++        {
++            result = allocator_stats->bytes_reservable_limit.value();
++        }
++        else
++        {
++            LOG(INFO) << "(getBytesReservableLimit) - Optional value is empty";
++        }
++    }
++    else
++    {
++        LOG(ERROR) << "(getBytesReservableLimit) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++int64 getBytesInactive( int gpu_id )
++{
++
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        result = allocator_stats->bytes_inactive;
++    }
++    else
++    {
++        LOG(ERROR) << "(getBytesInactive) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++int64 getBytesActive( int gpu_id )
++{
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        result = allocator_stats->bytes_active();
++    }
++    else
++    {
++        LOG(ERROR) << "(getBytesActive) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++int64 getPeakBytesActive( int gpu_id )
++{
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        result = allocator_stats->peak_bytes_active;
++    }
++    else
++    {
++        LOG(ERROR) << "(getPeakBytesActive) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++int64 getBytesReclaimed( int gpu_id )
++{
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        result = allocator_stats->bytes_reclaimed;
++    }
++    else
++    {
++        LOG(ERROR) << "(getBytesReclaimed) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++int64 getNumSingleReclaims( int gpu_id )
++{
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        result = allocator_stats->num_single_reclaims;
++    }
++    else
++    {
++        LOG(ERROR) << "(getNumSingleReclaims) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++int64 getNumFullReclaims( int gpu_id )
++{
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        result = allocator_stats->num_full_reclaims;
++    }
++    else
++    {
++        LOG(ERROR) << "(getNumFullReclaims) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++int64 getNumDefragmentations( int gpu_id )
++{
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        result = allocator_stats->num_defragmentations;
++    }
++    else
++    {
++        LOG(ERROR) << "(getNumDefragmentations) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++int64 getBytesDefragged( int gpu_id )
++{
++    int64 result = -1;
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if( allocator_stats != absl::nullopt )
++    {
++        result = allocator_stats->bytes_defragged;
++    }
++    else
++    {
++        LOG(ERROR) << "(getBytesDefragged) - Could not retrieve BFC Allocator Stats";
++    }
++
++    return result;
++}
++
++void LogBFCAllocatorStats( int gpu_id )
++{
++
++    std::stringstream ss;
++    ss << "\nEnter> LogBFCAllocatorStats\n";
++
++    absl::optional<tensorflow::AllocatorStats> allocator_stats = GetBFCAllocatorStats( gpu_id );
++
++    if ( allocator_stats != absl::nullopt )
++    {
++        ss << allocator_stats->DebugString();
++    }
++    else
++    {
++        ss << "Unable to log stats due to error retrieving Allocator\n\n\n";
++    }
++
++    ss << "<Exit LogBFCAllocatorStats";
++
++    // Log the stream
++    VLOG(2) << ss.str();
++}
++
++%}
++
++// Function to log allocator stats for requested GPU
++void LogBFCAllocatorStats( int gpu_id );
++
++// Getter functions for BFC Allocator statistics
++int64 getNumAllocs( int gpu_id );
++int64 getBytesInUse( int gpu_id );
++int64 getPeakBytesInUse( int gpu_id );
++int64 getLargestAllocSize( int gpu_id );
++int64 getBytesLimit( int gpu_id );
++int64 getBytesReserved( int gpu_id );
++int64 getPeakBytesReserved( int gpu_id );
++int64 getBytesReservableLimit( int gpu_id );
++int64 getBytesInactive( int gpu_id );
++int64 getBytesActive( int gpu_id );
++int64 getPeakBytesActive( int gpu_id );
++int64 getBytesReclaimed( int gpu_id );
++int64 getNumSingleReclaims( int gpu_id );
++int64 getNumFullReclaims( int gpu_id );
++int64 getNumDefragmentations( int gpu_id );
++int64 getBytesDefragged( int gpu_id );
+diff --git a/tensorflow/python/framework/bfc_allocator_stats.py b/tensorflow/python/framework/bfc_allocator_stats.py
+new file mode 100644
+index 0000000000..773071e16e
+--- /dev/null
++++ b/tensorflow/python/framework/bfc_allocator_stats.py
+@@ -0,0 +1,85 @@
++# Copyright 2019, 2020. IBM All Rights Reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++# ==============================================================================
++
++from tensorflow.python import pywrap_tensorflow as pywrap_tf
++from tensorflow.python.util.tf_export import tf_export
++
++def log_bfc_allocator_stats( gpu_id ):
++    """Wrapper for Print Allocator stats"""
++    pywrap_tf.LogBFCAllocatorStats( gpu_id )
++
++@tf_export("experimental.get_num_allocs")
++def get_num_allocs( gpu_id ):
++    return pywrap_tf.getNumAllocs( gpu_id )
++
++@tf_export("experimental.get_bytes_in_use")
++def get_bytes_in_use( gpu_id ):
++    return pywrap_tf.getBytesInUse( gpu_id )
++
++@tf_export("experimental.get_peak_bytes_in_use")
++def get_peak_bytes_in_use( gpu_id ):
++    return pywrap_tf.getPeakBytesInUse( gpu_id )
++
++@tf_export("experimental.get_largest_alloc_size")
++def get_largest_alloc_size( gpu_id ):
++    return pywrap_tf.getLargestAllocSize( gpu_id )
++
++@tf_export("experimental.get_bytes_limit")
++def get_bytes_limit( gpu_id ):
++    return pywrap_tf.getBytesLimit( gpu_id )
++
++@tf_export("experimental.get_bytes_reserved")
++def get_bytes_reserved( gpu_id ):
++    return pywrap_tf.getBytesReserved( gpu_id )
++
++@tf_export("experimental.get_peak_bytes_reserved")
++def get_peak_bytes_reserved( gpu_id ):
++    return pywrap_tf.getPeakBytesReserved( gpu_id )
++
++@tf_export("experimental.get_bytes_reservable_limit")
++def get_bytes_reservable_limit( gpu_id ):
++    return pywrap_tf.getBytesReservableLimit( gpu_id )
++
++@tf_export("experimental.get_bytes_inactive")
++def get_bytes_inactive( gpu_id ):
++    return pywrap_tf.getBytesInactive( gpu_id )
++
++@tf_export("experimental.get_bytes_active")
++def get_bytes_active( gpu_id ):
++    return pywrap_tf.getBytesActive( gpu_id )
++
++@tf_export("experimental.get_peak_bytes_active")
++def get_peak_bytes_active( gpu_id ):
++    return pywrap_tf.getPeakBytesActive( gpu_id )
++
++@tf_export("experimental.get_bytes_reclaimed")
++def get_bytes_reclaimed( gpu_id ):
++    return pywrap_tf.getBytesReclaimed( gpu_id )
++
++@tf_export("experimental.get_num_single_reclaims")
++def get_num_single_reclaims( gpu_id ):
++    return pywrap_tf.getNumSingleReclaims( gpu_id )
++
++@tf_export("experimental.get_num_full_reclaims")
++def get_num_full_reclaims( gpu_id ):
++    return pywrap_tf.getNumFullReclaims( gpu_id )
++
++@tf_export("experimental.get_num_defragmentations")
++def get_num_defragmentations( gpu_id ):
++    return pywrap_tf.getNumDefragmentations( gpu_id )
++
++@tf_export("experimental.get_bytes_defragged")
++def get_bytes_defragged( gpu_id ):
++    return pywrap_tf.getBytesDefragged( gpu_id )
+diff --git a/tensorflow/python/framework/config.py b/tensorflow/python/framework/config.py
+index c24b4e696e..29ad6d1ba1 100644
+--- a/tensorflow/python/framework/config.py
++++ b/tensorflow/python/framework/config.py
+@@ -1,4 +1,5 @@
+ # Copyright 2019 The TensorFlow Authors. All Rights Reserved.
++# Copyright 2019, 2020. IBM All Rights Reserved.
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License");
+ # you may not use this file except in compliance with the License.
+@@ -494,6 +495,34 @@ def set_memory_growth(device, enable):
+   context.context().set_memory_growth(device, enable)
+ 
+ 
++@tf_export('config.experimental.get_lms_enabled')
++def get_lms_enabled():
++  """Get value denoting whether LMS has been enabled
++  """
++  return context.context().get_lms_enabled()
++
++
++@tf_export('config.experimental.set_lms_enabled')
++def set_lms_enabled(lms_enabled):
++  """Set value denoting whether LMS has been enabled
++  """
++  context.context().lms_enabled = lms_enabled
++
++
++@tf_export('config.experimental.get_lms_defrag_enabled')
++def get_lms_defrag_enabled():
++  """Get value denoting whether LMS has been enabled
++  """
++  return context.context().get_lms_defrag_enabled()
++
++
++@tf_export('config.experimental.set_lms_defrag_enabled')
++def set_lms_defrag_enabled(lms_defrag_enabled):
++  """Set value denoting whether LMS has been enabled
++  """
++  context.context().lms_defrag_enabled = lms_defrag_enabled
++
++
+ @tf_export('config.get_logical_device_configuration',
+            'config.experimental.get_virtual_device_configuration')
+ @deprecation.deprecated_endpoints(
+diff --git a/tensorflow/python/keras/engine/network.py b/tensorflow/python/keras/engine/network.py
+index 8b8bbd902f..3e248fcf87 100644
+--- a/tensorflow/python/keras/engine/network.py
++++ b/tensorflow/python/keras/engine/network.py
+@@ -834,9 +834,12 @@ class Network(base_layer.Layer):
+ 
+     # Dictionary mapping reference tensors to computed tensors.
+     tensor_dict = {}
++    def _add_tensor_to_dict(id, t):
++      t.graph_id = id
++      tensor_dict[str(id)] = t
+ 
+     for x, y in zip(self.inputs, inputs):
+-      tensor_dict[str(id(x))] = y
++      _add_tensor_to_dict(id(x), y)
+       if isinstance(x, ops.Tensor) and isinstance(y, ops.Tensor):
+         try:
+           y.set_shape(y.shape.merge_with(x.shape))
+@@ -893,7 +896,7 @@ class Network(base_layer.Layer):
+           # Update tensor_dict.
+           for x, y in zip(
+               nest.flatten(node.output_tensors), nest.flatten(output_tensors)):
+-            tensor_dict[str(id(x))] = y
++            _add_tensor_to_dict(id(x), y)
+ 
+     output_tensors = []
+     output_shapes = []
+diff --git a/tensorflow/python/tensorflow.i b/tensorflow/python/tensorflow.i
+index b36024d513..1f0fd566f6 100644
+--- a/tensorflow/python/tensorflow.i
++++ b/tensorflow/python/tensorflow.i
+@@ -40,3 +40,5 @@ limitations under the License.
+ 
+ 
+ %include "tensorflow/compiler/mlir/python/mlir.i"
++
++%include "tensorflow/python/framework/bfc_allocator_stats.i"
+diff --git a/tensorflow/tools/api/golden/v1/tensorflow.config.experimental.pbtxt b/tensorflow/tools/api/golden/v1/tensorflow.config.experimental.pbtxt
+index f4b8bd63b0..d559f62f7d 100644
+--- a/tensorflow/tools/api/golden/v1/tensorflow.config.experimental.pbtxt
++++ b/tensorflow/tools/api/golden/v1/tensorflow.config.experimental.pbtxt
+@@ -16,6 +16,14 @@ tf_module {
+     name: "get_device_policy"
+     argspec: "args=[], varargs=None, keywords=None, defaults=None"
+   }
++  member_method {
++    name: "get_lms_enabled"
++    argspec: "args=[], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_lms_defrag_enabled"
++    argspec: "args=[], varargs=None, keywords=None, defaults=None"
++  }
+   member_method {
+     name: "get_memory_growth"
+     argspec: "args=[\'device\'], varargs=None, keywords=None, defaults=None"
+@@ -44,6 +52,14 @@ tf_module {
+     name: "set_device_policy"
+     argspec: "args=[\'device_policy\'], varargs=None, keywords=None, defaults=None"
+   }
++  member_method {
++    name: "set_lms_enabled"
++    argspec: "args=[\'lms_enabled\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "set_lms_defrag_enabled"
++    argspec: "args=[\'lms_defrag_enabled\'], varargs=None, keywords=None, defaults=None"
++  }
+   member_method {
+     name: "set_memory_growth"
+     argspec: "args=[\'device\', \'enable\'], varargs=None, keywords=None, defaults=None"
+diff --git a/tensorflow/tools/api/golden/v1/tensorflow.experimental.pbtxt b/tensorflow/tools/api/golden/v1/tensorflow.experimental.pbtxt
+index 5826676cc8..15e2ce3375 100644
+--- a/tensorflow/tools/api/golden/v1/tensorflow.experimental.pbtxt
++++ b/tensorflow/tools/api/golden/v1/tensorflow.experimental.pbtxt
+@@ -8,4 +8,68 @@ tf_module {
+     name: "output_all_intermediates"
+     argspec: "args=[\'state\'], varargs=None, keywords=None, defaults=None"
+   }
++  member_method {
++    name: "get_num_allocs"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_in_use"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_peak_bytes_in_use"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_largest_alloc_size"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_limit"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_reserved"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_peak_bytes_reserved"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_reservable_limit""
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_inactive"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_active"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_peak_bytes_active"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_reclaimed"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_num_single_reclaims"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_num_full_reclaims"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_num_defragmentations"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_defragged"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
+ }
+diff --git a/tensorflow/tools/api/golden/v2/tensorflow.config.experimental.pbtxt b/tensorflow/tools/api/golden/v2/tensorflow.config.experimental.pbtxt
+index f4b8bd63b0..d559f62f7d 100644
+--- a/tensorflow/tools/api/golden/v2/tensorflow.config.experimental.pbtxt
++++ b/tensorflow/tools/api/golden/v2/tensorflow.config.experimental.pbtxt
+@@ -16,6 +16,14 @@ tf_module {
+     name: "get_device_policy"
+     argspec: "args=[], varargs=None, keywords=None, defaults=None"
+   }
++  member_method {
++    name: "get_lms_enabled"
++    argspec: "args=[], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_lms_defrag_enabled"
++    argspec: "args=[], varargs=None, keywords=None, defaults=None"
++  }
+   member_method {
+     name: "get_memory_growth"
+     argspec: "args=[\'device\'], varargs=None, keywords=None, defaults=None"
+@@ -44,6 +52,14 @@ tf_module {
+     name: "set_device_policy"
+     argspec: "args=[\'device_policy\'], varargs=None, keywords=None, defaults=None"
+   }
++  member_method {
++    name: "set_lms_enabled"
++    argspec: "args=[\'lms_enabled\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "set_lms_defrag_enabled"
++    argspec: "args=[\'lms_defrag_enabled\'], varargs=None, keywords=None, defaults=None"
++  }
+   member_method {
+     name: "set_memory_growth"
+     argspec: "args=[\'device\', \'enable\'], varargs=None, keywords=None, defaults=None"
+diff --git a/tensorflow/tools/api/golden/v2/tensorflow.experimental.pbtxt b/tensorflow/tools/api/golden/v2/tensorflow.experimental.pbtxt
+index 71a93d85c8..0161485c02 100644
+--- a/tensorflow/tools/api/golden/v2/tensorflow.experimental.pbtxt
++++ b/tensorflow/tools/api/golden/v2/tensorflow.experimental.pbtxt
+@@ -8,4 +8,68 @@ tf_module {
+     name: "function_executor_type"
+     argspec: "args=[\'executor_type\'], varargs=None, keywords=None, defaults=None"
+   }
++  member_method {
++    name: "get_num_allocs"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_in_use"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_peak_bytes_in_use"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_largest_alloc_size"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_limit"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_reserved"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_peak_bytes_reserved"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_reservable_limit"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_inactive"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_active"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_peak_bytes_active"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_reclaimed"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_num_single_reclaims"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_num_full_reclaims"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_num_defragmentations"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
++  member_method {
++    name: "get_bytes_defragged"
++    argspec: "args=[\'gpu_id\'], varargs=None, keywords=None, defaults=None"
++  }
+ }
+-- 
+2.15.1
+
