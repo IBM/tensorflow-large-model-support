@@ -1,262 +1,208 @@
-# TensorFlow Large Model Support: Graph Editing Library for Large Model Support (LMS) in TensorFlow
+# TensorFlow Large Model Support
+TensorFlow Large Model Support (TFLMS) is a feature in the TensorFlow provided
+by [IBM Watson Machine Learning Community Edition](https://public.dhe.ibm.com/ibmdl/export/pub/software/server/ibm-ai/conda/) (WML CE) that allows the
+successful training of deep learning models that would otherwise exhaust GPU
+memory and abort with "out-of-memory" errors. LMS manages this
+oversubscription of GPU memory by temporarily swapping tensors to host memory
+when they are not needed.
 
-This library provides an approach to training large models that cannot be fit into GPU memory.
-It takes a computational graph defined by users, and automatically adds swap-in and swap-out nodes for transferring tensors from GPUs to the host and vice versa.
-The computational graph is statically modified. Hence, it needs to be done before a session actually starts.
+One or more elements of a deep learning model can lead to GPU memory exhaustion.
 
-IBM PowerAI 1.6 contains a newer implementation of TensorFlow Large Model Support than the version that is contained in this repository. The newer version is easier to use and can achieve greater levels of tensor swapping which can lead to higher resolutions, deeper models, or larger batch sizes. For more information see [What’s new in PowerAI 1.6 TensorFlow Large Model Support](https://developer.ibm.com/linuxonpower/2019/05/17/whats-new-in-powerai-1-6-tensorflow-large-model-support/).
+These include:
 
-## Install
-TensorFlow Large Model Support can be installed as a pip module named
-`tensoflow-large-model-support`. To install
-TensorFlow Large Model Support, run the following commands to clone this repository
-and install the module:
-```sh
-git clone https://github.com/IBM/tensorflow-large-model-support.git
-pip install ./tensorflow-large-model-support
-```
+ * Model depth and complexity
+ * Base data size (for example, high-resolution images)
+ * Batch size
 
-## How to use
-TensorFlow Large Model Support needs to know some information about user-defined models.
-There is one requirement for a user-defined model: it must have scopes for the optimizers/solvers.
+Traditionally, the solution to this problem has been to modify the model until
+it fits in GPU memory. This approach, however, can negatively impact
+accuracy – especially if concessions are made by reducing data
+fidelity or model complexity.
 
-Enabling LMS for a model depends on how users write their training. The
-following guidelines cover three ways to train:
-- [Session](https://www.tensorflow.org/programmers_guide/graphs)-based training
-- [Estimator](https://www.tensorflow.org/programmers_guide/estimators)-based training
-- [tf.keras](https://www.tensorflow.org/api_docs/python/tf/keras)-based training
+With LMS, deep learning models can scale significantly beyond what was
+previously possible and, ultimately, generate more accurate results.
 
-### [Session](https://www.tensorflow.org/programmers_guide/graphs)-based training
-#### Step 1: define optimizer/solver scopes
-```python
-with tf.name_scope('adam_optimizer'):
-	train_step = tf.train.AdamOptimizer(1e-4).minimize(cross_entropy)
-```
-#### Step 2: define an LMS object and run it
-```python
-from tensorflow_large_model_support import LMS
-lms_obj = LMS({'adam_optimizer'})
-lms_obj.run(graph=tf.get_default_graph())
-```
-The above lines must be put before starting a training session, for example:
-- Before inserting LMS code
-```python
-with tf.Session() as sess:
-    sess.run(tf.global_variables_initializer())
-	batch = mnist.train.next_batch(50)
-	train_step.run(feed_dict={x: batch[0], y_: batch[1]})
-```
-- After inserting LMS code
-```python
-from tensorflow_large_model_support import LMS
-lms_obj = LMS({'adam_optimizer'})
-lms_obj.run(graph=tf.get_default_graph())
+# Installing TensorFlow Large Model Support
 
-with tf.Session() as sess:
-    sess.run(tf.global_variables_initializer())
-	batch = mnist.train.next_batch(50)
-	train_step.run(feed_dict={x: batch[0], y_: batch[1]})
-```
-For a working example of LMS integration with Session based training see:
-`examples/mnist_deep_lms.py`
-which is an LMS enabled version of `https://github.com/tensorflow/tensorflow/blob/master/tensorflow/examples/tutorials/mnist/mnist_deep.py`.
+TFLMS is built into the `tensorflow-gpu` conda package so it is installed by
+default when you install the GPU enabled TensorFlow from WML CE.
+The support is currently available in the [WML CE Early Access conda channel](https://public.dhe.ibm.com/ibmdl/export/pub/software/server/ibm-ai/conda-early-access/).
+For more informaiton on this channel, how to add channels, and install
+frameworks see the [WML CE documentation](https://www.ibm.com/support/knowledgecenter/SS5SF7_1.6.2/navigation/wmlce_install.html).
 
-### [Estimator](https://www.tensorflow.org/programmers_guide/estimators)-based training
-#### Step 1: define optimizer/solver scopes
-```python
-with tf.name_scope('adam_optimizer'):
-      optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.001)
-      train_op = optimizer.minimize(
-        loss=loss,
-	global_step=tf.train.get_global_step())
-```
-#### Step 2: define a LMSSessionRunHook
-```python
-# Hook for Large Model Support
-from tensorflow_large_model_support import LMSSessionRunHook
-# LMSSessionRunHook and LMS share the same set of parameters. Here we just
-# use the default keyword arguments.
-lms_hook = LMSSessionRunHook({'adam_optimizer'})
-```
-#### Step 3: add the LMSSessionRunHook into the Estimator's hook list
-```python
-mnist_classifier.train(
-      input_fn=train_input_fn,
-      steps=20000
-      hooks=[logging_hook, lms_hook])
-```
+# How to enable TFLMS
 
-For a working example of LMS integration with Estimator based training see:
-`examples/cnn_mnist_lms.py`
-which is an LMS enabled version of `https://github.com/tensorflow/tensorflow/blob/master/tensorflow/examples/tutorials/layers/cnn_mnist.py`.
+The TFLMS functionality is disabled by default in TensorFlow and needs to be
+enabled before your model creates tensors. In most cases, enabling TFLMS is
+as simple as calling the enablement API at the start of your program:
 
-### [tf.keras](https://www.tensorflow.org/api_docs/python/tf/keras)-based training
-
-**NOTE:** The use of the LMSKerasCallback requires TensorFlow 1.12 or later.
-
-#### Step 1: Define a LMSKerasCallback.
-```python
-from tensorflow_large_model_support import LMSKerasCallback
-# LMSKerasCallback and LMS share a set of keyword arguments. Here we just
-# use the default options.
-lms_callback = LMSKerasCallback()
-```
-#### Step 2: pass the callback to the Keras `fit` or `fit_generator` function.
-```python
-model.fit_generator(generator=training_gen, callbacks=[lms_callback])
-```
-For a working example of LMS integration with Keras based training see:
-[examples/Keras_ResNet50.py](examples/Keras_ResNet50.py).
-
-### TensorFlow Grappler and TensorFlow Large Model Support
-
-Starting in TensorFlow 1.14, the dependency optimizer in TensorFlow's
-Grappler removes TensorFlow Large Model Support identity swapping nodes. To
-avoid this, that optimizer must be disabled. Here is an example of how to
-do this with a Keras model:
 ```python
 import tensorflow as tf
-from tensorflow.core.protobuf import rewriter_config_pb2
-from tensorflow.python.keras import backend as K
-config = tf.ConfigProto()
-config.graph_options.rewrite_options.dependency_optimization = rewriter_config_pb2.RewriterConfig.OFF
-K.set_session(tf.Session(config=config))
+tf.config.experimental.set_lms_enabled(True)
 ```
 
-TensorFlow has a mechanism for memory optimization. Though the mechanism can
-coexist with this module, it is recommended to switch its mode to
-`SCHEDULING_HEURISTICS` to allow training as large a model as possible. This
-can be done via the following snippet code:
+In TensorFlow 2 some models use sessions and session configurations are
+created either explicitly in model code or implicitly within TensorFlow APIs.
+
+## Using TensorFlow Estimators
+TensorFlow Estimators use sessions for training and will implicitly create
+a default session configuration if one is not specified. To enable TFLMS
+the ConfigProto settings need to be updated with the LMS setting.
+
 ```python
-config = tf.ConfigProto()
-config.graph_options.rewrite_options.memory_optimization = \
-	rewriter_config_pb2.RewriterConfig.SCHEDULING_HEURISTICS
+# Create a session config if necessary, or add to the existing session config
+session_config = tf.compat.v1.ConfigProto(allow_soft_placement=True)
+session_config.gpu_options.experimental.lms_enabled = True
+
+# Create a run config if necessary, or add the session_config to the existing
+# run config.
+run_config = tf.estimator.RunConfig(# ... other RunConfig parameters,
+                                    session_config=session_config)
+# Pass the RunConfig to the Estimator
+estimator = tf.estimator.Estimator( # .. other Estimator parameters,
+                                   config=run_config)
 ```
 
-### Scaling tips
+## TensorFlow Keras directly setting session
+If a TensorFlow Keras model is used in with v1 compatibility mode	in
+TensorFlow 2, and TensorFlow 2 behavior is disabled using:
+```python
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
+```
+then the Session configuration must be set to enable LMS.
 
-If scaling to multiple GPUs is achieved by building the model
-in a multi-tower fashion with a tower for each GPU as described in the [TensorFlow documentation](https://www.tensorflow.org/guide/using_gpu),
-you must also set and tune the `TF_CUDA_HOST_MEM_LIMIT_IN_MB` environment
-variable (`TF_GPU_HOST_MEM_LIMIT_IN_MB` in TensorFlow 1.14).
+```python
+session_config = tf.compat.v1.ConfigProto(allow_soft_placement=True)
+session_config.gpu_options.experimental.lms_enabled = True
+sess = tf.Session(config=session_config)
+tf.keras.backend.set_session(sess)
+```
 
-TensorFlow sets a limit on the amount of memory that will be allocated on
-the CUDA host (CPU) side. The limit is often not high enough to act as a tensor
-swap space for multiple GPUs. Failure to set this limit higher will result
-in out of memory errors like this: `Allocator (cuda_host_bfc) ran out of memory trying to allocate`.
-Note the `cuda_host_bfc` allocator is mentioned rather than a GPU allocator.
-Note in TensorFlow 1.14 this host side allocator name changed to `gpu_host_bfc`.
+### TensorFlow 1.x models using Sessions
+If a standard sessions-based TensorFlow 1.x model is used with v1
+compatibility mode in TensorFlow 2 using:
+```python
+import tensorflow.compat.v1 as tf
+```
+then the Session configuration must be set to enable LMS.
 
-A good rule of thumb would be to start with a value that is 4 times the memory
-capacity of the GPUs times the number of GPUs that will be used.  For example,
-if you have four 16 GB GPUs in a system and will use all four in a training run,
-`TF_CUDA_HOST_MEM_LIMIT_IN_MB` (`TF_GPU_HOST_MEM_LIMIT_IN_MB` in
-	TensorFlow 1.14) should be set to 262144 and adjust from there
-as needed. (4 x 16384 (16GB as MB) x 4 GPUs) = 262144 MB.
+```python
+session_config = tf.compat.v1.ConfigProto(allow_soft_placement=True)
+session_config.gpu_options.experimental.lms_enabled = True
+sess = tf.Session(config=session_config)
+```
 
+# Examples
+The ManyModel.py example, found in the [TensorFlow LMS examples](examples/),
+uses synthetic random images with multiple models provided by
+TensorFlow Keras applications to allow users a fast hands-on experience with
+LMS. The example allows users to change the image size, explore auto-tuning,
+and manually set the LMS tunable parameters on many variants of the
+ResNet, DenseNet, MobileNet, Inception, NASNet, and Xception models.
+Advanced users can also use the command line parameters to enable CUDA
+profiling that can be used with the NVIDIA Visual Profiler to profile
+and visualize the tensor swapping.
 
-### Parameters for Parameters for LMS/LMSSessionRunHook/LMSKerasCallback
-#### Required parameters
-_graph_ :: the graph we will modify for LMS. This should be the graph of user-defined neural network. (not required in LMSSessionRunHook or LMSKerasCallback)
+# Usage tips
 
-_optimizer_scopes_ :: scopes for the optimizers/solvers. (Not required in LMSKerasCallback)
+## Increase the system memory (GPU host) memory allocation
+TensorFlow sets a limit on the amount of memory that will be allocated on the
+GPU host (CPU) side. The limit is often not high enough to act as a tensor swap
+space when swapping a large amount of data or when using multiple GPUs without
+the use of Horovod. The limit can be adjusted by setting the
+`TF_GPU_HOST_MEM_LIMIT_IN_MB` environment variable. Failure to set this limit
+higher will result in out of memory errors such as: Allocator (gpu_host_bfc)
+ran out of memory trying to allocate. Note the gpu_host_bfc allocator is
+mentioned rather than a GPU allocator.
 
-#### Optional parameters
-_starting_scope_ :: Tensors that are reachable from the operations in this scope will be swapped for LMS. Set this to the scope of the first layer if we would like to modify the whole graph. Default `None`.
+The value for `TF_GPU_HOST_MEM_LIMIT_IN_MB` should be several times the size
+of the memory of the GPUs being used by the TensorFlow process. For example,
+if a single 32GB GPU is being used then the `TF_GPU_HOST_MEM_LIMIT_IN_MB`
+should be set several times greater than 32GB.
 
-_starting_op_names_ :: Tensors that are reachable from the operations with these names will be swapped for LMS. Default `None`.
+If Horovod distribution is being used, it will create one process per GPU. In
+this the `TF_GPU_HOST_MEM_LIMIT_IN_MB` limit should be set several times greater
+than the memory of one of the GPUs.
 
-_excl_scopes_ :: a set of scopes for operations whose tensors will not be swapped out to the host. Default `empty`.
+If other GPU distrubtion mechanisms are used, then the
+`TF_GPU_HOST_MEM_LIMIT_IN_MB` limit should be set to several times the sum of
+the memory of all the GPUs being used.
 
-_incl_scopes_ :: a set of scopes for operations whose tensors will be swapped out to the host. Default `empty`.
+## Use NUMA pinning for single GPU use
+If you are utilizing a single GPU it is recommended to use NUMA pinning to pin
+the process to the CPU and memory that is on the same system socket as the
+GPU being used. Pinning the process allows the fastest connection paths between
+system memory and GPU memory, which reduces the training or inferencing time.
+WML CE includes the numactl utility that can be used to do this pinning. It
+can be installed with the `conda install numactl` command. The following
+example shows how to specify a single GPU to be used and how to pin the
+process to use the CPU cores and memory that are on the same socket
+as the specified GPU:
 
-_excl_types_ :: a set of types for operations whose tensors will not be swapped out to the host. Default `empty`.
+```sh
+export CUDA_VISIBLE_DEVICES=0
+numactl --cpunodebind=0 --membind=0 python train.py
+```
 
-_incl_types_ :: a set of types for operations whose tensors will be swapped out to the host. Default `empty`.
+## Use Horovod when using more than one GPU
+It is recommended to use Horovod distribution when using more than one GPU
+because Horovod creates a separate process per GPU and automatically sets the
+process have socket affinity with the GPU which allows the fastest
+connection paths between system memory and GPU memory, which reduces the
+training or inferencing time.
 
-_n_tensors_ :: The number of tensors for LMS, counting from the `starting_scope`. To turn off LMS, set `n_tensors` to `0`. Default `-1` (all reachable tensors will be swapped for LMS).
+# Memory defragmentation
+When using very large tensors or during the course of a very long training
+operation, the model's memory allocation and usage pattern may lead to
+fragmented GPU memory and out of memory errors. When this occurs there is
+enough free memory in the GPU for the next allocation, but it is in
+non-contiguous blocks. In these cases, the process will fail and output a
+message like this:
 
-_lb_ :: Lowerbound value for LMS. A tensor will be swapped in during the backward phase at least `lb` nodes before it in the graph. Default `1`.
+```
+Enough free memory to satisfy the allocation request exists but it is fragmented.
+Enabling Large Model Support defragmentation may avoid this failure.
+```
 
-_ub_ :: Upperbound value for LMS. Default `10000`.
+TFLMS is capable of defragmenting sections of GPU memory to gather a
+contiguous block large enough for the request. This feature waits for current
+GPU computation to finish and then relocates active tensors to coalesce
+contiguous free memory blocks.
 
-_fuse_swapins_ :: Fuse "close" swap-in operations into one operation. This may improve the performance. Default `False`.
+Even with the GPU computation cleared, the moving of active tensors carries
+a risk of introducing NaN errors or other instability into the model. Despite
+this risk it has performed well in multi-week training runs with very large
+tensors and defragmentation called frequently.
 
-_ctrld_strategy_ :: Two strategies to find control dependency ops for	swapin ops: `chain_rule` and `direct_order`. `chain_rule` strategy starts from a forward operation, goes forward and finds a corresponding backward operation to be a control dependency operation. `direct_order` strategy directly gets a backward ops in the topological order to be a control dependency operation. Both strategies depend on `lb` and `ub` to choose a control dependency operation. While the `direct_order` is more exact than `chain_rule` in relation to `lb` and `ub`, it experimentally often results in smaller maximum batch size than `chain_rule`. Default `chain_rule`.
+Due to the possible risk of instability the Large Model Support defragmentation
+is disabled by default and can be enabled along with LMS with this the `tf.config.experimental.set_lms_defrag_enabled(True)` API or the  
+`config.gpu_options.experimental.lms_defrag_enabled=True` ConfigProto setting.
 
-_swap_branches_ :: If True, LMS will swap tensors in branches in the forward phase. Default `False`.
+# Model memory usage analysis with allocator statistics
+TFLMS adds several APIs to obtain GPU memory allocator statistics such as
+the number of allocations, the peak memory usage, the amount
+of memory swapped, and more. For more information on the statistics APIs
+and examples of their usage see the [TensorFlow LMS examples](examples/).
 
-_branch_threshold_ :: If `swap_branches` is enabled and the topological-sort distance between the consuming operation and generating operation of a tensor is greater than `branch_threshold`, then swap the tensor. Default `0`.
+# Building TensorFlow from source with TensorFlow Large Model Support
+The [patches](patches/) directory contains git patch of for the TFLMS code.
+The file names correspond to tag levels in the
+[TensorFlow source](https://github.com/tensorflow/tensorflow/). To build
+TensorFlow from source with TensorFlow Large Model Support, check out the
+specific TensorFlow git tag and then apply the corresponding TensorFlow Large
+Model Support patch file.
 
-_debug_ :: Debug mode for LMS. Default `False`.
+For example:
+```sh
+git clone https://github.com/tensorflow/tensorflow
+cd tensorflow
+git pull --tags
+git checkout v2.1.0
+git apply /tensorflow-large-model-support/patches/tensorflow_v2.1.0_large_model_support.patch
+```
 
-_debug_level_ :: Debug level for LMS (1 or 2). Default `1`.
-
-
-### Performance Tuning LMS
-
-Once you have enabled LMS graph modification in your code you will want to find
-the combination of tuning parameters that gives the fastest training time and
-best accuracy with your model. The goal of the performance tuning is to swap
-out enough tensors to allow your training to run without hitting out of memory
-errors, while not swapping too many such that the extra swapping communication
-overhead degrades performance.
-
-The two tuning parameters you should focus on are `n_tensors` and `lb`.
-Since `n_tensors` controls the number of tensors that will be swapped, the
-higher this is set, the lower the peak GPU memory usage will be. The `lb`
-controls how soon the tensor is swapped back in before use. A low value of `lb`
-can make the training on the GPU pause and wait while the swap in finishes.
-This will degrade performance. A higher value of `lb` can allow the tensor
-swap in to finish before it's needed and allow training to run without pause.
-The downside to swapping in too early is that more tensors will be in GPU
-memory at any point in time, resulting in higher peak GPU memory usage.
-
-The tuning thus becomes finding the correct balance between `n_tensors` and `lb`
-that provides the best performance for given model.  To start the performance
-tuning it's suggested that `n_tensors` be set to -1 which will swap all
-reachable tensors. The `lb` should be set to the default 1, which is the latest
-possible swap in. If `tf.logging` verbosity is set to `tf.logging.INFO`, LMS
-will output a log statement with a count of the number of tensors swapped.
-It is useful to run with `n_tensors=-1` for the first run to find this maximum
-value and then adjust it downward. If your model has branches like some UNet
-models do, you will likely want to set `swap_branches=True` and tune the branch
-threshold as well. While tuning the parameters, it is often useful to surface
-the LMS parameters in the training script as command line parameters or
-configuration file properties.
-
-By default LMS will analyze your graph to find the starting operations to use
-for finding tensor swap candidates. You can bypass this analysis by placing your
-starting operations in a named scope and providing the scope on the
-`starting_scope` parameter, or by providing the names of the starting operations
-on the `starting_op_names` parameter. This can speed up repeated runs of LMS
-during tuning. Furthermore, you can enable `debug=True` and `debug_level=1`
-and LMS will print out the name and type of the starting operations it
-finds. These names could be passed in on the `starting_op_names` parameter on
-subsequent runs.
-
-It is recommended that you start with tuning training on a single GPU before
-enabling your code for multi-GPU with DDL.
-
-### Example of TensorFlow Large Model Support with Large Data and Tuning
-
-The Keras model example `examples/Keras_ResNet50.py` allows the user to
-increase the input data size to cause out of memory situations and then
-easily experiment with TFLMS tuning options to train with larger data.
-See the comment header in the example for more information.
-
-## Contribution guidelines
+# Contribution guidelines
 
 If you want to contribute to TensorFlow Large Model Support please read the
 [contribution guidelines](CONTRIBUTING.md).
-
-
-## Citations
-
-### Scientific papers:
-
-Tung D. Le, Haruki Imai, Yasushi Negishi, Kiyokuni Kawachiya. [TFLMS: Large Model Support in TensorFlow by Graph Rewriting](https://arxiv.org/abs/1807.02037). eprint arXiv:1807.02037. 07/2018.
-
-### Case studies:
-
-Samuel Matzek. TensorFlow Large Model Support Case Study with 3D Image Segmentation. [https://developer.ibm.com/linuxonpower/2018/07/27/tensorflow-large-model-support-case-study-3d-image-segmentation/](https://developer.ibm.com/linuxonpower/2018/07/27/tensorflow-large-model-support-case-study-3d-image-segmentation/). IBM Developer. 07/2018.
