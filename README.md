@@ -206,3 +206,17 @@ git apply /tensorflow-large-model-support/patches/tensorflow_v2.1.0_large_model_
 
 If you want to contribute to TensorFlow Large Model Support please read the
 [contribution guidelines](CONTRIBUTING.md).
+
+# Previous implementations of TensorFlow Large Model Support
+## TFLMSv1
+The TFLMSv1 implementation was installed as a separate module from TensorFlow
+and performed static graph modifications on the model's graph to introduce
+swapping nodes. This implementation was included in the tensorflow.contrib
+module path as a technology preview in IBM PowerAI 1.5.4 and earlier releases.
+The implementation source resides in the [tflmsv1](https://github.com/IBM/tensorflow-large-model-support/tree/tflmsv1) branch of this repository.
+## TFLMSv2
+The TFLMSv2 implementation was installed as a separate conda module from
+TensorFlow and performed static graph modifications on the model's graph to
+introduce swapping nodes and other graph optimizations. This implementation
+was included in IBM Watson Machine Learning Community Edition 1.6.x versions.
+The implementation of this version is not open source.
