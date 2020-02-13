@@ -28,7 +28,7 @@ TFLMS is built into the `tensorflow-gpu` conda package so it is installed by
 default when you install the GPU enabled TensorFlow from WML CE.
 The support is currently available in the [WML CE Early Access conda channel](https://public.dhe.ibm.com/ibmdl/export/pub/software/server/ibm-ai/conda-early-access/).
 For more information on this channel, how to add channels, and install
-frameworks see the [this post](https://developer.ibm.com/linuxonpower/2020/02/10/using-the-watson-machine-learning-community-edition-auxiliary-channels/).
+frameworks see [this post](https://developer.ibm.com/linuxonpower/2020/02/10/using-the-watson-machine-learning-community-edition-auxiliary-channels/).
 
 # How to enable TFLMS
 
