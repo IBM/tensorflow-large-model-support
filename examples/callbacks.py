@@ -92,12 +92,19 @@ class LMSStats():
         return self._cumulative_stats.copy()
 
     def get_average_stats(self):
-        s = self._num_steps * 1.0
-        average =  {k: v/s for (k,v) in self._cumulative_stats.items()}
-        average['num_steps'] = self._num_steps
-        return average
+        if self._num_steps:
+            s = self._num_steps * 1.0
+            average =  {k: v/s for (k,v) in self._cumulative_stats.items()}
+            average['num_steps'] = self._num_steps
+            return average
+        else:
+            average = {k: 0 for k in STATS_KEYS}
+            average['num_steps'] = 0
+            return average
 
     def get_median_time(self):
+        if not self._step_times:
+            return 0
         return statistics.median(self._step_times)
 
 # writes the stats from the last call to step_end to the log file
@@ -239,10 +246,19 @@ class LMSStatsAverage(Callback):
             rate_field = 'megavoxels/sec'
 
         duration = stats_dict['time']
-        rate = ((self._batch_size * (self._dim ** self._num_dims)) / duration ) / 1000000.0
+        if duration:
+            rate = ((self._batch_size * (self._dim ** self._num_dims)) /
+                    duration ) / 1000000.0
+        else:
+            rate = 0
 
         duration = self._lms_stats.get_median_time()
-        median_rate = ((self._batch_size * (self._dim ** self._num_dims)) / duration ) / 1000000.0
+        if duration:
+            median_rate = ((self._batch_size * (self._dim ** self._num_dims)) /
+                           duration ) / 1000000.0
+        else:
+            median_rate = 0
+
         median_rate_field = 'median '+rate_field
         # Put these columns first, with the rest of the stats in a sorted
         # order.
