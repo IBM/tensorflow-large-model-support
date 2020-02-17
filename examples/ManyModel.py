@@ -245,9 +245,7 @@ def main():
     args = parser.parse_args()
     if args.lms_stats or args.lms_stats_average:
         if not os.path.exists(args.output_dir):
-            print('Error: The output directory specified by the --output_dir '
-                  'parameter does not exist: ', args.output_dir)
-            exit(1)
+            os.makedirs(args.output_dir, exist_ok=True)
     run_model(args)
 
 if __name__ == "__main__":
