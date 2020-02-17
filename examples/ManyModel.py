@@ -243,6 +243,9 @@ def main():
     parser.set_defaults(channels_last=False)
 
     args = parser.parse_args()
+    if args.lms_stats or args.lms_stats_average:
+        if not os.path.exists(args.output_dir):
+            os.makedirs(args.output_dir, exist_ok=True)
     run_model(args)
 
 if __name__ == "__main__":
