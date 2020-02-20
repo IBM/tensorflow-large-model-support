@@ -177,7 +177,7 @@ this risk it has performed well in multi-week training runs with very large
 tensors and defragmentation called frequently.
 
 Due to the possible risk of instability the Large Model Support defragmentation
-is disabled by default and can be enabled along with LMS with this the `tf.config.experimental.set_lms_defrag_enabled(True)` API or the  
+is disabled by default and can be enabled along with LMS with the `tf.config.experimental.set_lms_defrag_enabled(True)` API or the  
 `config.gpu_options.experimental.lms_defrag_enabled=True` ConfigProto setting.
 
 # Model memory usage analysis with allocator statistics
