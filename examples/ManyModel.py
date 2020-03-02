@@ -173,7 +173,9 @@ def run_model(args):
     random_generator = random_image_generator(batch_size, num_classes,
                                               input_shape)
 
+
     model.fit(random_generator, steps_per_epoch=steps_per_epoch,
+              verbose=1 if not hvd or hvd.rank() == 0 else 0,
               epochs=args.epochs, callbacks=get_callbacks(args))
 
 
