@@ -46,6 +46,12 @@ import os
 from tensorflow.keras import backend as K
 from callbacks import CudaProfileCallback, LMSStatsLogger, LMSStatsAverage
 
+# import Horovod if invoked with distribution
+hvd = None
+if "OMPI_COMM_WORLD_RANK" in os.environ:
+    import horovod.tensorflow.keras as hvd
+    hvd.init()
+
 #tf.logging.set_verbosity(tf.logging.INFO)
 model_choices = {'resnet50': tf.keras.applications.ResNet50,
                  'resnet101': tf.keras.applications.ResNet101,
@@ -86,21 +92,37 @@ def random_image_generator(batch_size, num_classes, input_shape):
         y_array = tf.keras.utils.to_categorical(y, num_classes)
         yield(x_array, y_array)
 
+
+
+def generate_stats_name(model, root):
+    # Generates the name of the output stats file.
+    # If Horovod distribution is enabled, the node and GPU ID are appended to the end
+    return ('%s_%s%s%s.csv' %
+           (model, root,
+           ('_%s' % os.environ["HOSTNAME"] if hvd else ""),
+           (('_gpu%s' % hvd.local_rank()) if hvd else "")))
+
+
 def get_callbacks(args):
     callbacks = []
+
+    if hvd:
+        callbacks.append(hvd.callbacks.BroadcastGlobalVariablesCallback(0))
+        callbacks.append(hvd.callbacks.MetricAverageCallback())
 
     if args.nvprof:
         callbacks.append(CudaProfileCallback(args.nvprof_epoch,
                                              args.nvprof_start,
                                              args.nvprof_stop))
+
     if args.lms_stats:
         stats_filename = os.path.join(args.output_dir,
-                                      '%s_lms_stats.csv' % args.model)
+                                      generate_stats_name(args.model, "lms_stats"))
         callbacks.append(LMSStatsLogger(stats_filename))
 
     if args.lms_stats_average:
         stats_filename = os.path.join(args.output_dir,
-                                      '%s_lms_stats_average.csv' % args.model)
+                                      generate_stats_name(args.model, "lms_stats_average"))
         lms = LMSStatsAverage(stats_filename,
                               args.image_size,
                               batch_size=args.batch_size,
@@ -116,6 +138,21 @@ def run_model(args):
         tf.config.experimental.set_lms_defrag_enabled(True)
 
     image_dim = args.image_size
+    opt = tf.keras.optimizers.RMSprop()
+    if hvd:
+        # Horovod: pin GPU to be used to process local rank (one GPU per process)
+        gpus = tf.config.list_physical_devices('GPU')
+        tf.config.experimental.set_memory_growth(gpus[hvd.local_rank()], True)
+        tf.config.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
+
+
+        # Horovod: add Horovod DistributedOptimizer.
+        opt = hvd.DistributedOptimizer(opt)
+        steps_per_epoch = max(1, args.steps // hvd.size())
+        experimental_run_tf_function = False
+    else:
+        steps_per_epoch = args.steps
+        experimental_run_tf_function = True
 
     if args.channels_last:
         K.set_image_data_format('channels_last')
@@ -130,12 +167,15 @@ def run_model(args):
     model = model_class(weights=None, include_top=True, input_shape=input_shape,
                         classes=num_classes)
 
-    model.compile(optimizer='rmsprop', loss='categorical_crossentropy')
+    model.compile(optimizer=opt, loss='categorical_crossentropy',
+                  experimental_run_tf_function=experimental_run_tf_function)
 
     random_generator = random_image_generator(batch_size, num_classes,
                                               input_shape)
-    steps_per_epoch = args.steps
+
+
     model.fit(random_generator, steps_per_epoch=steps_per_epoch,
+              verbose=1 if not hvd or hvd.rank() == 0 else 0,
               epochs=args.epochs, callbacks=get_callbacks(args))
 
 
@@ -245,7 +285,11 @@ def main():
     args = parser.parse_args()
     if args.lms_stats or args.lms_stats_average:
         if not os.path.exists(args.output_dir):
-            os.makedirs(args.output_dir, exist_ok=True)
+            if hvd:
+                if hvd.local_rank() == 0:
+                    os.makedirs(args.output_dir, exist_ok=True)
+            else:
+                os.makedirs(args.output_dir, exist_ok=True)
     run_model(args)
 
 if __name__ == "__main__":
