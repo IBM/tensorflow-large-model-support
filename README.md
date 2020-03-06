@@ -200,7 +200,7 @@ git clone https://github.com/tensorflow/tensorflow
 cd tensorflow
 git pull --tags
 git checkout v2.1.0
-git apply /tensorflow-large-model-support/patches/tensorflow_v2.1.0_large_model_support.patch
+git am /tensorflow-large-model-support/patches/tensorflow_v2.1.0_large_model_support.patch
 ```
 
 # Contribution guidelines
