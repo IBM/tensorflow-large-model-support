@@ -134,8 +134,6 @@ def get_callbacks(args):
 def run_model(args):
     if args.lms:
         tf.config.experimental.set_lms_enabled(True)
-    if args.lms_defrag:
-        tf.config.experimental.set_lms_defrag_enabled(True)
 
     image_dim = args.image_size
     opt = tf.keras.optimizers.RMSprop()
@@ -209,14 +207,6 @@ def main():
                            help='Disable LMS (Default)')
     parser.set_defaults(lms=False)
 
-    defrag_group = parser.add_mutually_exclusive_group(required=False)
-    defrag_group.add_argument('--lms_defrag', dest='lms_defrag',
-                              action='store_true',
-                              help='Enable LMS defragmentation')
-    defrag_group.add_argument('--no-lms_defrag', dest='lms_defrag',
-                              action='store_false',
-                              help='Disable LMS defragmentation (Default)')
-    parser.set_defaults(lms_defrag=False)
     lms_stats = parser.add_mutually_exclusive_group(required=False)
     lms_stats.add_argument('--lms_stats', dest='lms_stats', action='store_true',
                            help='Log LMS per-step stats to a file named '

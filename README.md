@@ -153,33 +153,6 @@ process have socket affinity with the GPU which allows the fastest
 connection paths between system memory and GPU memory, which reduces the
 training or inferencing time.
 
-# Memory defragmentation
-When using very large tensors or during the course of a very long training
-operation, the model's memory allocation and usage pattern may lead to
-fragmented GPU memory and out of memory errors. When this occurs there is
-enough free memory in the GPU for the next allocation, but it is in
-non-contiguous blocks. In these cases, the process will fail and output a
-message like this:
-
-```
-Enough free memory to satisfy the allocation request exists but it is fragmented.
-Enabling Large Model Support defragmentation may avoid this failure.
-```
-
-TFLMS is capable of defragmenting sections of GPU memory to gather a
-contiguous block large enough for the request. This feature waits for current
-GPU computation to finish and then relocates active tensors to coalesce
-contiguous free memory blocks.
-
-Even with the GPU computation cleared, the moving of active tensors carries
-a risk of introducing NaN errors or other instability into the model. Despite
-this risk it has performed well in multi-week training runs with very large
-tensors and defragmentation called frequently.
-
-Due to the possible risk of instability the Large Model Support defragmentation
-is disabled by default and can be enabled along with LMS with the `tf.config.experimental.set_lms_defrag_enabled(True)` API or the  
-`config.gpu_options.experimental.lms_defrag_enabled=True` ConfigProto setting.
-
 # Model memory usage analysis with allocator statistics
 TFLMS adds several APIs to obtain GPU memory allocator statistics such as
 the number of allocations, the peak memory usage, the amount
