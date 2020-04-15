@@ -68,6 +68,25 @@ Returns the limit of reservable memory.
 
 **Parameter:** `gpu_id`: The zero indexed GPU ID for which to retrieve the statistic.
 
+```python
+tf.experimental.get_gpu_host_bytes_in_use(numa_node)
+```
+Returns the current number of bytes in use in the GPU host (CPU memory) allocator.
+
+_Since: 2.2.0_
+
+**Parameter:** `numa_node`: The ID of the NUMA node for the allocator.
+
+```python
+tf.experimental.get_gpu_host_peak_bytes_in_use(numa_node)
+```
+Returns the peak number of bytes in use in the GPU host (CPU memory) allocator.
+
+_Since: 2.2.0_
+
+**Parameter:** `numa_node`: The ID of the NUMA node for the allocator.
+
+
 ## Large Model Support Specific Statistics
 The Large Model Support specific statistics provide information about Large
 Model Support's memory management. The statics use the following terms:
@@ -108,6 +127,26 @@ Returns the peak number of active bytes.
 tf.experimental.get_bytes_reclaimed(gpu_id)
 ```
 Returns the number of reclaimed bytes.
+
+**Parameter:** `gpu_id`: The zero indexed GPU ID for which to retrieve the statistic.
+
+
+```python
+tf.experimental.get_current_bytes_reclaimed(gpu_id)
+```
+Returns the current number of reclaimed bytes.
+
+_Since: 2.2.0_
+
+**Parameter:** `gpu_id`: The zero indexed GPU ID for which to retrieve the statistic.
+
+
+```python
+tf.experimental.get_peak_bytes_reclaimed(gpu_id)
+```
+Returns the peak number of reclaimed bytes.
+
+_Since: 2.2.0_
 
 **Parameter:** `gpu_id`: The zero indexed GPU ID for which to retrieve the statistic.
 
