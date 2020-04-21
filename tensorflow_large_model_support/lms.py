@@ -403,6 +403,8 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
         sl_by_size = []
         if self._serialization_by_size:
             sl_by_size = self._get_serialization_levels_by_size(self._serialization_by_size)
+            self._log_info("Serialize topological sort levels consuming more than: {} GiB".format(self._serialization_by_size),
+                           offset=2)
         self._serialization += sl_by_size
 
         # serialize the topological sort if enabled
@@ -602,6 +604,12 @@ class LMS(tf.keras.callbacks.Callback, tf.train.SessionRunHook):
                                "{} and {}.".format(h_op.name, d_op.name), 1)
                 fs = {op for op in ut.fanins(d_op) | set(d_op.control_inputs)
                       if is_device_op(op)}
+                if fs:
+                    pass
+                else:
+                    fs = {op
+                          for op in self._get_ops_by_level(self._get_level(d_op) - 1)
+                          if is_device_op(op)}
                 # cycles: h_op -> h_op_outs -> fs_ops -> h_op
                 fs -= {op2
                        for op1 in h_op_outs
