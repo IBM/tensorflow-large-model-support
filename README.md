@@ -153,3 +153,9 @@ config = tf.ConfigProto()
 config.graph_options.rewrite_options.memory_optimization = \
 	rewriter_config_pb2.RewriterConfig.SCHEDULING_HEURISTICS
 ```
+
+## Citations
+
+### Scientific papers:
+
+Tung D. Le, Haruki Imai, Yasushi Negishi, and Kiyokuni Kawachiya. 2019. [Automatic GPU memory management for large neural models in TensorFlow](https://dl.acm.org/doi/abs/10.1145/3315573.3329984). In Proceedings of the 2019 ACM SIGPLAN International Symposium on Memory Management (ISMM 2019), 1–13.
