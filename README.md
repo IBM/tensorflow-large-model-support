@@ -220,4 +220,4 @@ The TFLMSv2 implementation was installed as a separate conda module from
 TensorFlow and performed static graph modifications on the model's graph to
 introduce swapping nodes and other graph optimizations. This implementation
 was included in IBM Watson Machine Learning Community Edition 1.6.x versions.
-The implementation of this version is not open source.
+The implementation source resides in the [tflmsv2](https://github.com/IBM/tensorflow-large-model-support/tree/tflmsv2) branch of this repository.
