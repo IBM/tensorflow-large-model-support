@@ -153,7 +153,7 @@ process have socket affinity with the GPU which allows the fastest
 connection paths between system memory and GPU memory, which reduces the
 training or inferencing time.
 
-# Memory defragmentation
+# Memory Defragmentation
 When using very large tensors or during the course of a very long training
 operation, the model's memory allocation and usage pattern may lead to
 fragmented GPU memory and out of memory errors. When this occurs there is
