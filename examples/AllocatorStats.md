@@ -68,6 +68,25 @@ Returns the limit of reservable memory.
 
 **Parameter:** `gpu_id`: The zero indexed GPU ID for which to retrieve the statistic.
 
+```python
+tf.experimental.get_gpu_host_bytes_in_use(numa_node)
+```
+Returns the current number of bytes in use in the GPU host (CPU memory) allocator.
+
+_Since: 2.2.0_
+
+**Parameter:** `numa_node`: The ID of the NUMA node for the allocator.
+
+```python
+tf.experimental.get_gpu_host_peak_bytes_in_use(numa_node)
+```
+Returns the peak number of bytes in use in the GPU host (CPU memory) allocator.
+
+_Since: 2.2.0_
+
+**Parameter:** `numa_node`: The ID of the NUMA node for the allocator.
+
+
 ## Large Model Support Specific Statistics
 The Large Model Support specific statistics provide information about Large
 Model Support's memory management. The statics use the following terms:
@@ -80,9 +99,6 @@ Inactive tensors are those tensors which are not currently being used by an
 executing operation or a soon-to-be executing operation.
 * reclaim bytes - Reclaimed bytes are the bytes of inactive tensors which have
 been moved from GPU memory to the system (host) memory.
-* defragmentation - A method of producing contiguous memory blocks by moving
-active bytes to allow free memory blocks between the active bytes to coalesce
-into larger contiguous blocks.
 
 
 ```python
@@ -114,6 +130,26 @@ Returns the number of reclaimed bytes.
 
 **Parameter:** `gpu_id`: The zero indexed GPU ID for which to retrieve the statistic.
 
+
+```python
+tf.experimental.get_current_bytes_reclaimed(gpu_id)
+```
+Returns the current number of reclaimed bytes.
+
+_Since: 2.2.0_
+
+**Parameter:** `gpu_id`: The zero indexed GPU ID for which to retrieve the statistic.
+
+
+```python
+tf.experimental.get_peak_bytes_reclaimed(gpu_id)
+```
+Returns the peak number of reclaimed bytes.
+
+_Since: 2.2.0_
+
+**Parameter:** `gpu_id`: The zero indexed GPU ID for which to retrieve the statistic.
+
 ```python
 tf.experimental.get_num_single_reclaims(gpu_id)
 ```
@@ -128,27 +164,5 @@ tf.experimental.get_num_full_reclaims(gpu_id)
 When no single tensor reclamation is able to free enough GPU memory for the
 allocation request, all tensors are reclaimed. This returns the number
 of times all tensors were reclaimed.
-
-**Parameter:** `gpu_id`: The zero indexed GPU ID for which to retrieve the statistic.
-
-
-```python
-tf.experimental.get_num_defragmentations(gpu_id)
-```
-GPU memory may become fragmented such that there are no contiguous blocks which
-can fulfill an allocation request, even after reclaiming all inactive
-tensors. In this case, active tensors may be moved to allow free blocks to be
-coalesced to produce a contiguous memory block large enough to fulfill the
-allocation request. The defragmentation function of Large Model Support is
-disabled by default. This API returns the number of times defragmentation was
-performed.
-
-**Parameter:** `gpu_id`: The zero indexed GPU ID for which to retrieve the statistic.
-
-
-```python
-tf.experimental.get_bytes_defragged(gpu_id)
-```
-The number of bytes moved during GPU memory defragmentation.
 
 **Parameter:** `gpu_id`: The zero indexed GPU ID for which to retrieve the statistic.
